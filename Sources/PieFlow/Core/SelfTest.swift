@@ -19,6 +19,89 @@ enum SelfTest {
         return out
     }
 
+    /// `PieFlow --aec-test`: plays a sentence through the speakers while the mic records, once with
+    /// voice isolation and once without, and prints what each recording contains.
+    static func aecTest() -> Int32 {
+        let store = Store.shared
+        let transcriber = Transcriber(store: store)
+        guard Permissions.microphone else { print("FAIL microphone permission not granted to this process"); Log.write("aec-test FAIL no mic permission"); return 1 }
+        var results: [(Bool, Float, String)] = []
+        var liveOn = false
+        for isolate in [false, true] {
+            let mic = MicRecorder()
+            do { try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: isolate) } catch { print("FAIL mic: \(error)"); return 1 }
+            Thread.sleep(forTimeInterval: 0.5)
+            let say = Process()
+            say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            say.arguments = ["-r", "190", "The quick brown fox jumps over the lazy dog while the speakers are playing."]
+            try? say.run(); say.waitUntilExit()
+            Thread.sleep(forTimeInterval: 0.4)
+            let s = mic.stop()
+            let rms = WAV.rms(s)
+            let maxAbs = s.map { abs($0) }.max() ?? 0
+            let nonZero = Double(s.filter { $0 != 0 }.count) / Double(max(s.count, 1))
+            Log.write("aec-test isolation=\(isolate) format=\(mic.inputFormatDescription) samples=\(s.count) maxAbs=\(String(format: "%.5f", maxAbs)) nonZero=\(String(format: "%.2f", nonZero))")
+            if isolate { liveOn = s.count > 16_000 && maxAbs > 0 && nonZero > 0.5 }
+            var text = ""
+            switch await_({ try await transcriber.transcribe(s, timeout: 60, only: .local) }) {
+            case .success(let r): text = r.text
+            case .failure(let e): text = "(stt error: \(e.localizedDescription))"
+            }
+            results.append((isolate, rms, text))
+            let line = "\(isolate ? "isolation ON " : "isolation OFF") voiceProcessing=\(mic.voiceProcessingActive) rms=\(String(format: "%.4f", rms)) heard=\"\(text)\""
+            print(line); Log.write("aec-test " + line)
+        }
+        let off = results[0], on = results[1]
+        let leakOff = off.2.lowercased().contains("fox"), leakOn = on.2.lowercased().contains("fox")
+        let ok = liveOn && !leakOn && (on.1 < off.1 * 0.5 || !leakOff)
+        let verdict = ok ? "AEC TEST PASS (mic live, speaker audio removed from the mic signal)"
+            : !liveOn ? "AEC TEST FAIL (isolated mic signal is dead)" : "AEC TEST FAIL (speaker audio still reaches transcription)"
+        print(verdict); Log.write("aec-test " + verdict)
+        Thread.sleep(forTimeInterval: 0.5)
+        return ok ? 0 : 1
+    }
+
+    /// `PieFlow --aec-probe`: records 2 s of room noise with voice processing on, trying several tap
+    /// formats, and logs per channel levels so we can see where the processed voice actually lands.
+    static func aecProbe() -> Int32 {
+        guard Permissions.microphone else { Log.write("aec-probe FAIL no mic permission"); return 1 }
+        for variant in ["node", "nil", "mono"] {
+            let engine = AVAudioEngine()
+            let input = engine.inputNode
+            do { try input.setVoiceProcessingEnabled(true) } catch { Log.write("aec-probe setVoiceProcessingEnabled: \(error)"); return 1 }
+            let node = input.outputFormat(forBus: 0)
+            let tapFormat: AVAudioFormat? = variant == "node" ? node : variant == "nil" ? nil : AVAudioFormat(standardFormatWithSampleRate: node.sampleRate, channels: 1)
+            var maxPerCh: [Float] = []
+            var frames = 0
+            var seenFormat = ""
+            let lock = NSLock()
+            input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { buf, _ in
+                lock.lock(); defer { lock.unlock() }
+                seenFormat = "\(Int(buf.format.sampleRate))Hz/\(buf.format.channelCount)ch interleaved=\(buf.format.isInterleaved)"
+                frames += Int(buf.frameLength)
+                guard let ch = buf.floatChannelData else { return }
+                if maxPerCh.count < Int(buf.format.channelCount) { maxPerCh = Array(repeating: 0, count: Int(buf.format.channelCount)) }
+                for c in 0..<Int(buf.format.channelCount) {
+                    let ptr = ch[c]
+                    let stride = buf.format.isInterleaved ? Int(buf.format.channelCount) : 1
+                    var m: Float = 0
+                    var i = 0
+                    while i < Int(buf.frameLength) { m = max(m, abs(ptr[i * stride])); i += 1 }
+                    maxPerCh[c] = max(maxPerCh[c], m)
+                }
+            }
+            engine.prepare()
+            do { try engine.start() } catch { Log.write("aec-probe \(variant) start failed: \(error)"); continue }
+            Thread.sleep(forTimeInterval: 2.0)
+            input.removeTap(onBus: 0); engine.stop()
+            lock.lock()
+            Log.write("aec-probe variant=\(variant) nodeFormat=\(Int(node.sampleRate))Hz/\(node.channelCount)ch tap=\(seenFormat) frames=\(frames) maxPerChannel=\(maxPerCh.map { String(format: "%.5f", $0) })")
+            lock.unlock()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        return 0
+    }
+
     static func run() -> Int32 {
         print("PieFlow self test, version \(AppInfo.version), \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let store = Store.shared
@@ -45,7 +128,7 @@ enum SelfTest {
         if Permissions.microphone {
             let mic = MicRecorder()
             do {
-                try mic.start(deviceUID: store.settings.microphoneUID)
+                try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
                 Thread.sleep(forTimeInterval: 1.0)
                 let s = mic.stop()
                 s.count > 8000 ? line("PASS", "mic capture", "\(s.count) samples at 16 kHz in 1 s") : line("FAIL", "mic capture", "only \(s.count) samples")

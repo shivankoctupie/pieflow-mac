@@ -104,6 +104,9 @@ struct GeneralSettings: View {
                              options: [(String?.none, "System default")] + devices.map { (Optional($0.uid), $0.name) })
                 .onAppear { devices = AudioDevices.inputs() }
             }
+            SettingsRow(title: "Isolate my voice", subtitle: "Cancels audio playing through this Mac's speakers and suppresses background noise, so music, videos or the other side of a call are not transcribed. Turn off only if your microphone misbehaves with it.") {
+                PillToggle(isOn: $store.settings.voiceIsolation)
+            }
             SettingsRow(title: "Dictation Language", subtitle: languageName(store.settings.language)) {
                 ThemedPicker(selection: $store.settings.language, options: Self.languages)
             }

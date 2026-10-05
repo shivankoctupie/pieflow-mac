@@ -87,7 +87,7 @@ final class DictationController: ObservableObject {
         }
         targetApp = NSWorkspace.shared.frontmostApplication
         do {
-            try mic.start(deviceUID: store.settings.microphoneUID)
+            try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
         } catch {
             flash(error.localizedDescription, error: true); return
         }

@@ -183,6 +183,12 @@ extension AppDelegate: NSMenuDelegate {
 if CommandLine.arguments.contains("--selftest") {
     exit(SelfTest.run())
 }
+if CommandLine.arguments.contains("--aec-probe") {
+    exit(SelfTest.aecProbe())
+}
+if CommandLine.arguments.contains("--aec-test") {
+    exit(SelfTest.aecTest())
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

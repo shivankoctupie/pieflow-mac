@@ -109,7 +109,7 @@ final class Notetaker: ObservableObject {
         let fmt = DateFormatter(); fmt.dateFormat = "MMM d, h:mm a"
         let meeting = Meeting(title: title ?? "Meeting \(fmt.string(from: Date()))")
         store.meetings.insert(meeting, at: 0)
-        do { try mic.start(deviceUID: store.settings.microphoneUID) } catch {
+        do { try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation) } catch {
             update(meeting.id) { $0.status = .failed; $0.errorMessage = error.localizedDescription }
             return
         }

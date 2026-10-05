@@ -74,7 +74,23 @@ final class MicRecorder {
     /// Called with each converted chunk (used by the notetaker).
     var onChunk: (([Float]) -> Void)?
 
-    func start(deviceUID: String?) throws {
+    /// True when the running engine has Apple voice processing (echo cancellation + noise suppression) on.
+    private(set) var voiceProcessingActive = false
+    private(set) var inputFormatDescription = ""
+
+    /// `voiceIsolation` enables Apple's voice processing on the input: it cancels whatever this Mac is
+    /// playing through its speakers (music, a call, a video) and suppresses background noise, so only the
+    /// person at the keyboard is transcribed. Falls back to the plain microphone if the device refuses it.
+    func start(deviceUID: String?, voiceIsolation: Bool = true) throws {
+        do {
+            try startEngine(deviceUID: deviceUID, voiceIsolation: voiceIsolation)
+        } catch where voiceIsolation {
+            Log.write("voice processing unavailable (\(error.localizedDescription)), using plain microphone")
+            try startEngine(deviceUID: deviceUID, voiceIsolation: false)
+        }
+    }
+
+    private func startEngine(deviceUID: String?, voiceIsolation: Bool) throws {
         stopEngine()
         lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
         let engine = AVAudioEngine()
@@ -84,13 +100,28 @@ final class MicRecorder {
             AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                                  &id, UInt32(MemoryLayout<AudioDeviceID>.size))
         }
+        if voiceIsolation {
+            try input.setVoiceProcessingEnabled(true)
+            input.isVoiceProcessingBypassed = false
+            input.isVoiceProcessingAGCEnabled = false
+            // Keep other apps at full volume; we only want the cancellation, not the FaceTime style ducking.
+            if #available(macOS 14.0, *) {
+                input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
+            }
+        }
+        voiceProcessingActive = voiceIsolation
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             throw NSError(domain: "PieFlow", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone input available."])
         }
+        // Voice processing exposes a multi channel node format (7 identical channels on a MacBook) and
+        // AVAudioConverter turns that into silence. Asking the tap for mono at the node's rate gives real audio.
+        let tapFormat = inFormat.channelCount == 1 ? inFormat
+            : (AVAudioFormat(standardFormatWithSampleRate: inFormat.sampleRate, channels: 1) ?? inFormat)
+        inputFormatDescription = "\(Int(inFormat.sampleRate))Hz/\(inFormat.channelCount)ch tap \(tapFormat.channelCount)ch"
         let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate, channels: 1, interleaved: false)!
-        converter = AVAudioConverter(from: inFormat, to: outFormat)
-        input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buffer, _ in
+        converter = AVAudioConverter(from: tapFormat, to: outFormat)
+        input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] buffer, _ in
             self?.process(buffer, outFormat: outFormat)
         }
         engine.prepare()
