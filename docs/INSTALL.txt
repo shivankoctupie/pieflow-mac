@@ -1,0 +1,35 @@
+PieFlow for Mac: install in 2 minutes
+=====================================
+
+1. Drag PieFlow into the Applications folder.
+
+2. Open PieFlow from Applications.
+   PieFlow is signed for personal use, not notarized by Apple, so the first launch
+   is blocked. To allow it:
+     - Double click PieFlow. When macOS says it cannot verify it, click Done.
+     - Open System Settings > Privacy & Security, scroll down, and click
+       "Open Anyway" next to PieFlow. Confirm with your password.
+   Or paste this into Terminal once:
+     xattr -dr com.apple.quarantine /Applications/PieFlow.app
+
+3. Follow the setup screen:
+     - Allow Microphone and Accessibility (Accessibility lets PieFlow see the fn key
+       and paste text).
+     - If your Mac opens emojis when you press fn, set System Settings > Keyboard >
+       "Press fn key to" to "Do Nothing".
+     - Paste a Grok (console.x.ai) or Groq (console.groq.com) API key, or download
+       the local Whisper model to work offline.
+
+How to use
+  Hold fn, speak, let go               text appears where your cursor is
+  Double tap fn (or fn + space)        hands-free, press fn again to finish
+  Esc while recording                  cancel
+  Select text, then Option + 1         Polish
+  Select text, then Option + 2         Prompt Engineer
+  Menu bar icon > Start Notetaker      record and summarise a meeting
+
+After updating PieFlow, macOS may forget the Accessibility permission. Open
+System Settings > Privacy & Security > Accessibility, remove PieFlow with the minus
+button, then open PieFlow again and allow it.
+
+Your data stays in ~/Library/Application Support/PieFlow.
