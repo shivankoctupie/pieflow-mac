@@ -371,11 +371,24 @@ struct PrivacySettings: View {
 
 struct AboutSettings: View {
     @EnvironmentObject var router: Router
+    @EnvironmentObject var updater: Updater
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) { LogoMark(size: 28); Text("PieFlow for Mac").font(.sans(22, .semibold)) }
             Text("Version \(AppInfo.version). Personal voice dictation and meeting notes. Free and local first.")
                 .font(.sans(15)).foregroundStyle(Theme.ink2)
+            SettingsCard {
+                SettingsRow(title: "Updates", subtitle: updateLine, divider: false) {
+                    switch updater.state {
+                    case .checking: ProgressView().controlSize(.small)
+                    case .available: Button("Update now") { updater.installAvailable() }.buttonStyle(PrimaryButton())
+                    case .downloading, .installing: ProgressView().controlSize(.small)
+                    default: Button("Check now") { updater.check(userInitiated: true) }.buttonStyle(GhostButton())
+                    }
+                }
+            }
+            Text("PieFlow checks github.com/\(Updater.repo) for new releases after launch and every few hours. Nothing about you is sent; it is one request for the release list.")
+                .font(.sans(12.5)).foregroundStyle(Theme.ink3)
             HStack {
                 Button("Run setup again") {
                     Store.shared.settings.onboarded = false
@@ -384,6 +397,19 @@ struct AboutSettings: View {
                 }.buttonStyle(GhostButton())
                 Button("Open log") { NSWorkspace.shared.open(Paths.logFile) }.buttonStyle(GhostButton())
             }.padding(.top, 8)
+        }
+    }
+
+    private var updateLine: String {
+        let when = updater.lastChecked.map { "Last checked " + RelativeDateTimeFormatter().localizedString(for: $0, relativeTo: Date()) } ?? "Not checked yet"
+        switch updater.state {
+        case .checking: return "Checking GitHub releases"
+        case .upToDate: return "You are on the latest version. \(when)."
+        case .available(let r): return "Version \(r.version) is available. \(when)."
+        case .downloading(let p): return "Downloading, \(Int(p * 100))%"
+        case .installing: return "Installing and relaunching"
+        case .failed(let m): return "Check failed: \(m)"
+        case .idle: return when + "."
         }
     }
 }

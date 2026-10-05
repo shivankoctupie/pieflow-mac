@@ -217,6 +217,7 @@ struct Settings: Codable {
     var sounds = true
     var muteWhileDictating = false
     var voiceIsolation = true
+    var skippedVersion: String?
     var transformsEnabled = true
     var autoApplyTransform = false
     var autoApplyTransformID: UUID?
@@ -256,6 +257,7 @@ struct Settings: Codable {
         sounds = v(.sounds, d.sounds)
         muteWhileDictating = v(.muteWhileDictating, d.muteWhileDictating)
         voiceIsolation = v(.voiceIsolation, d.voiceIsolation)
+        skippedVersion = v(.skippedVersion, d.skippedVersion)
         transformsEnabled = v(.transformsEnabled, d.transformsEnabled)
         autoApplyTransform = v(.autoApplyTransform, d.autoApplyTransform)
         autoApplyTransformID = v(.autoApplyTransformID, d.autoApplyTransformID)

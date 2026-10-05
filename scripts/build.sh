@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 BUILD_NUM="$(date +%Y%m%d%H%M)"
 APP="build/PieFlow.app"
 # The macOS 27 SDK turns SwiftUI property wrappers into macros whose plugin ships only with full Xcode.

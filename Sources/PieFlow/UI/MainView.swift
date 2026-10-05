@@ -228,6 +228,7 @@ struct HomePage: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var router: Router
     @EnvironmentObject var dictation: DictationController
+    @EnvironmentObject var updater: Updater
     @State private var search = ""
     @State private var searching = false
 
@@ -235,6 +236,7 @@ struct HomePage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 Text("Welcome back, \(store.settings.userName)").font(.sans(28, .semibold)).foregroundStyle(Theme.ink)
+                UpdateBanner()
                 HStack(alignment: .top, spacing: 28) {
                     VStack(alignment: .leading, spacing: 28) {
                         if !store.settings.dismissedHero.contains("home") {
@@ -496,5 +498,53 @@ struct HistoryRow: View {
     private func delete() {
         if let f = entry.audioFile { try? FileManager.default.removeItem(at: Paths.audio.appendingPathComponent(f)) }
         store.history.removeAll { $0.id == entry.id }
+    }
+}
+
+
+/// Shown on the home page when a newer release exists or an update is in progress.
+struct UpdateBanner: View {
+    @EnvironmentObject var updater: Updater
+    var body: some View {
+        switch updater.state {
+        case .available(let r):
+            HStack(spacing: 14) {
+                Image(systemName: "arrow.down.circle").font(.system(size: 20, weight: .light)).foregroundStyle(Theme.ink)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PieFlow \(r.version) is available").font(.sans(15.5, .semibold)).foregroundStyle(Theme.ink)
+                    Text("You have \(Updater.currentVersion). Updating keeps your permissions, key and history.").font(.sans(13.5)).foregroundStyle(Theme.ink2)
+                }
+                Spacer()
+                Button("What's new") { NSWorkspace.shared.open(r.pageURL) }.buttonStyle(.plain).font(.sans(14)).foregroundStyle(Theme.ink2)
+                Button("Skip") { updater.skip(r) }.buttonStyle(GhostButton())
+                Button("Update now") { updater.installAvailable() }.buttonStyle(PrimaryButton())
+            }
+            .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.accentSoft))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.accentLine))
+        case .downloading(let p):
+            HStack(spacing: 14) {
+                ProgressView(value: p).frame(width: 180)
+                Text("Downloading update, \(Int(p * 100))%").font(.sans(14)).foregroundStyle(Theme.ink2)
+                Spacer()
+            }
+            .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.card))
+        case .installing:
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                Text("Installing. PieFlow will relaunch in a moment.").font(.sans(14)).foregroundStyle(Theme.ink2)
+                Spacer()
+            }
+            .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.card))
+        case .failed(let msg):
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.red)
+                Text("Update failed: \(msg)").font(.sans(13.5)).foregroundStyle(Theme.ink2).lineLimit(2)
+                Spacer()
+                Button("Dismiss") { updater.dismiss() }.buttonStyle(GhostButton())
+            }
+            .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.card))
+        default:
+            EmptyView()
+        }
     }
 }

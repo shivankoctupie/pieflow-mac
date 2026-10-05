@@ -147,3 +147,27 @@ enum FocusTest {
         }
     }
 }
+
+/// `PIEFLOW_FAKE_VERSION=0.9.0 PieFlow --update-test`: runs the real update path against the live
+/// GitHub release (check, download, checksum, swap, relaunch) and logs each step to pieflow.log.
+enum UpdateTest {
+    static func run(_ app: AppDelegate) {
+        Log.write("update-test start, pretending to be \(Updater.currentVersion) at \(Bundle.main.bundlePath)")
+        app.updater.check(userInitiated: true)
+        var ticks = 0
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { t in
+            ticks += 1
+            switch app.updater.state {
+            case .available(let r):
+                Log.write("update-test found \(r.version), installing")
+                app.updater.installAvailable()
+            case .upToDate:
+                Log.write("update-test RESULT: already up to date, nothing to install"); t.invalidate(); exit(0)
+            case .failed(let m):
+                Log.write("update-test RESULT: FAIL \(m)"); t.invalidate(); exit(1)
+            default:
+                if ticks > 600 { Log.write("update-test RESULT: FAIL timeout"); exit(1) }
+            }
+        }
+    }
+}

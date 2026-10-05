@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     lazy var notetaker = Notetaker(store: store, transcriber: transcriber, llm: llm)
     lazy var models = ModelManager()
     lazy var llmBox = LLMBox(llm: llm, engine: engine)
+    lazy var updater = Updater(store: store)
     let router = Router()
     lazy var flowBar = FlowBarController(dictation: dictation, store: store)
 
@@ -29,7 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dictation.startListening()
         store.pruneAudio()
         transcriber.warmUpLocal()
+        updater.startSchedule()
         NotificationCenter.default.addObserver(forName: .showOnboarding, object: nil, queue: .main) { [weak self] _ in self?.showOnboarding() }
+        if CommandLine.arguments.contains("--update-test") {
+            UpdateTest.run(self)
+            return
+        }
         if CommandLine.arguments.contains("--focus-test") {
             showOnboarding()
             FocusTest.run(self)
@@ -62,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func environment<V: View>(_ v: V) -> some View {
         v.environmentObject(store).environmentObject(router).environmentObject(dictation)
-            .environmentObject(notetaker).environmentObject(models).environmentObject(llmBox)
+            .environmentObject(notetaker).environmentObject(models).environmentObject(llmBox).environmentObject(updater)
     }
 
     @objc func showMain() {
@@ -123,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About PieFlow", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
@@ -173,9 +180,17 @@ extension AppDelegate: NSMenuDelegate {
         let status = NSMenuItem(title: dictation.hotkeys.isListening ? "Hold \(store.settings.hotkey.label) to dictate" : "Shortcut inactive: check permissions", action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        if let r = updater.availableRelease {
+            menu.addItem(withTitle: "Update to PieFlow \(r.version)…", action: #selector(installUpdate), keyEquivalent: "").target = self
+        } else {
+            menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
+        }
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Quit PieFlow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
+
+    @objc func checkUpdates() { updater.check(userInitiated: true); showMain(); router.settingsTab = .about; router.showSettings = true }
+    @objc func installUpdate() { showMain(); updater.installAvailable() }
 }
 
 // MARK: entry
