@@ -77,6 +77,8 @@ final class Notetaker: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var micLevel: Float = 0
     @Published var statusLine = ""
+    /// Set when a detected call started this recording, so the watcher may also stop it.
+    var detectedApp: String?
 
     let store: Store
     let transcriber: Transcriber
@@ -103,8 +105,9 @@ final class Notetaker: ObservableObject {
     }
 
     @MainActor
-    func start(title: String? = nil) async {
+    func start(title: String? = nil, detectedApp: String? = nil) async {
         guard !isRecording else { return }
+        self.detectedApp = detectedApp
         guard Permissions.microphone else { Permissions.requestMicrophone { _ in }; statusLine = "Microphone access needed"; return }
         let fmt = DateFormatter(); fmt.dateFormat = "MMM d, h:mm a"
         let meeting = Meeting(title: title ?? "Meeting \(fmt.string(from: Date()))")
@@ -176,6 +179,7 @@ final class Notetaker: ObservableObject {
     func stop() async {
         guard let id = activeID else { return }
         timer?.invalidate()
+        detectedApp = nil
         lastID = id
         let duration = Date().timeIntervalSince(started)
         transcribePending(final: true)

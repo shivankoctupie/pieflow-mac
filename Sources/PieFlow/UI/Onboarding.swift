@@ -62,6 +62,7 @@ struct OnboardingView: View {
             .background(Theme.page)
         }
         .frame(width: 900, height: 620)
+        .textSelection(.enabled)
         .onReceive(timer) { _ in
             if perms.accessibility && !dictation.hotkeys.isListening { dictation.startListening() }
         }

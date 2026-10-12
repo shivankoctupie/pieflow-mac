@@ -19,6 +19,7 @@ enum Paths {
     static var audio: URL { dir("audio") }
     static var models: URL { dir("models") }
     static var meetings: URL { dir("meetings") }
+    static var notes: URL { dir("notes") }
     static var logFile: URL { support.appendingPathComponent("pieflow.log") }
 }
 

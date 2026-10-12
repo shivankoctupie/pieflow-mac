@@ -38,8 +38,9 @@ enum Snapshot {
         store.snippets = [Snippet(trigger: "my email address", expansion: "me@example.com"),
                           Snippet(trigger: "my calendar link", expansion: "https://cal.com/your-name/30min"),
                           Snippet(trigger: "organize thoughts prompt", expansion: "Organize these unstructured thoughts into a clear, polished version without losing any detail.")]
-        store.notes = [Note(title: "Launch checklist", body: "Pricing page\nDemo video\nFAQ on local models"),
-                       Note(title: "Hiring thoughts", body: "Need one designer who can also write.")]
+        var launch = Note(title: "Launch checklist", body: "Pricing page\nDemo video\nFAQ on local models")
+        if let icon = NSImage(named: NSImage.applicationIconName), let name = NoteImages.save(icon) { launch.images = [name] }
+        store.notes = [launch, Note(title: "Hiring thoughts", body: "Need one designer who can also write.")]
         var m = Meeting(title: "Weekly product sync")
         m.started = cal.date(byAdding: .day, value: -1, to: Date())!
         m.durationSec = 1860
@@ -69,6 +70,10 @@ enum Snapshot {
             steps.append(("page-\(p.rawValue)", { app.router.page = p; app.router.openMeeting = nil }))
         }
         steps.append(("meeting-detail", { app.router.page = .notetaker; app.router.openMeeting = app.store.meetings.first?.id }))
+        steps.append(("note-with-image", {
+            app.router.openMeeting = nil; app.router.page = .scratchpad
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NotificationCenter.default.post(name: .openFirstNote, object: nil) }
+        }))
         steps.append(("insights-voice", { app.router.openMeeting = nil; app.router.page = .insights; app.router.insightsTab = 1 }))
         for t in SettingsTab.allCases {
             steps.append(("settings-\(t.rawValue)", { app.router.insightsTab = 0; app.router.settingsTab = t; app.router.showSettings = true }))

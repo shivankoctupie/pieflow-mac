@@ -102,6 +102,37 @@ enum SelfTest {
         return 0
     }
 
+    /// `PieFlow --mic-test [deviceUID]`: opens the microphone exactly as a dictation would, records 3 s,
+    /// and logs the device chosen, the format, and how long the start of the recording was silent.
+    static func micTest() -> Int32 {
+        let store = Store.shared
+        guard Permissions.microphone else { Log.write("mic-test FAIL no mic permission"); return 1 }
+        let args = CommandLine.arguments
+        let pinned: String? = args.firstIndex(of: "--mic-test").flatMap { i in i + 1 < args.count && !args[i + 1].hasPrefix("--") ? args[i + 1] : nil }
+        let seconds = args.firstIndex(of: "--seconds").flatMap { i in i + 1 < args.count ? Double(args[i + 1]) : nil } ?? 3.0
+        let mic = MicRecorder()
+        if args.contains("--warm") {
+            mic.prewarm(deviceUID: pinned, voiceIsolation: store.settings.voiceIsolation)
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+            let me = UInt32(ProcessInfo.processInfo.processIdentifier)
+            let holding = MeetingWatcher.processesUsingMic(excludingPID: 0).contains { $0.pid == me }
+            Log.write("mic-test standby pipeline holds the mic open: \(holding)")
+        }
+        do { try mic.start(deviceUID: pinned, voiceIsolation: store.settings.voiceIsolation) } catch { Log.write("mic-test FAIL start: \(error)"); return 1 }
+        // The engine runs on the main run loop; spin it so taps, the watchdog and config changes fire.
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        let s = mic.stop()
+        let firstSound = s.firstIndex { abs($0) > 0.0005 } ?? s.count
+        let startMs = Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000)
+        let firstMs = mic.firstBufferAt.map { Int($0.timeIntervalSince(mic.startCalledAt) * 1000) } ?? -1
+        let line = String(format: "mic-test %@ samples=%d rms=%.4f leadingSilence=%.2fs nonZero=%.2f startTook=%dms firstAudioAt=%dms",
+                          mic.choice?.reason ?? "?", s.count, WAV.rms(s), Double(firstSound) / MicRecorder.sampleRate,
+                          Double(s.filter { $0 != 0 }.count) / Double(max(1, s.count)), startMs, firstMs)
+        Log.write(line); print(line)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        return s.count > 16_000 ? 0 : 1
+    }
+
     static func run() -> Int32 {
         print("PieFlow self test, version \(AppInfo.version), \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let store = Store.shared

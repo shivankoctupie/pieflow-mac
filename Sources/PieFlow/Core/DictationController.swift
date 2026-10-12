@@ -33,6 +33,17 @@ final class DictationController: ObservableObject {
         hotkeys.onEvent = { [weak self] e in self?.handle(e) }
     }
 
+    /// Keeps a microphone pipeline prepared so the next fn press opens the mic in tens of milliseconds.
+    func keepMicWarm() {
+        prewarmTimer?.invalidate()
+        prewarmTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            guard let self, !self.mic.isRunning else { return }
+            self.mic.prewarm(deviceUID: self.store.settings.microphoneUID, voiceIsolation: self.store.settings.voiceIsolation)
+        }
+        prewarmTimer?.fire()
+    }
+    private var prewarmTimer: Timer?
+
     func startListening() {
         hotkeys.hotkey = store.settings.hotkey
         hotkeys.transformsEnabled = store.settings.transformsEnabled
@@ -86,19 +97,20 @@ final class DictationController: ObservableObject {
             return
         }
         targetApp = NSWorkspace.shared.frontmostApplication
+        // Show the pill and play the cue first; the user should see a response on the key press itself.
+        startedAt = Date()
+        messageWork?.cancel()
+        setPhase(.recording(handsFree: handsFree))
+        Sounds.start()
         do {
             try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
         } catch {
             flash(error.localizedDescription, error: true); return
         }
-        startedAt = Date()
-        messageWork?.cancel()
-        setPhase(.recording(handsFree: handsFree))
-        Sounds.start()
         if store.settings.muteWhileDictating { SystemAudio.mute(true) }
         maxTimer?.invalidate()
         maxTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: false) { [weak self] _ in self?.stopAndProcess() }
-        Log.write("dictation start (handsFree=\(handsFree)) app=\(targetApp?.localizedName ?? "?")")
+        Log.write("dictation start (handsFree=\(handsFree)) app=\(targetApp?.localizedName ?? "?") micStartTook=\(Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000))ms")
     }
 
     func cancel(silent: Bool) {
@@ -118,6 +130,7 @@ final class DictationController: ObservableObject {
         Sounds.stop()
         level = 0
         guard samples.count > Int(MicRecorder.sampleRate * 0.3), WAV.rms(samples) > 0.002 else {
+            Log.write(String(format: "dictation dropped: %.1fs held, %d samples, rms %.4f (%@)", duration, samples.count, WAV.rms(samples), mic.choice?.reason ?? "?"))
             flash("Didn't catch that", error: false); return
         }
         setPhase(.processing)

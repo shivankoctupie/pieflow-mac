@@ -1059,6 +1059,7 @@ struct ScratchpadPage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     PageTitle(text: "Scratchpad", beta: true)
+                        .onReceive(NotificationCenter.default.publisher(for: .openFirstNote)) { _ in selected = store.notes.first?.id }
                     if !store.settings.dismissedHero.contains("scratchpad") {
                         HeroBanner(tint: [Color(hex: 0x3A2618), Color(hex: 0x7A5634), Color(hex: 0xB8895A)],
                                    onClose: { store.settings.dismissedHero.append("scratchpad") }) {
@@ -1113,6 +1114,10 @@ struct ScratchpadPage: View {
     }
 }
 
+extension Notification.Name {
+    static let openFirstNote = Notification.Name("pieflow.openFirstNote")
+}
+
 struct NoteEditor: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var llmBox: LLMBox
@@ -1146,9 +1151,65 @@ struct NoteEditor: View {
             TextEditor(text: Binding(get: { store.notes[safe: index]?.body ?? "" },
                                      set: { store.notes[index].body = $0; store.notes[index].updated = Date() }))
                 .font(.sans(16)).lineSpacing(5).scrollContentBackground(.hidden)
-            Text("Tip: click into the note and hold \(store.settings.hotkey.label) to dictate.").font(.sans(12.5)).foregroundStyle(Theme.ink3)
+            if let imgs = store.notes[safe: index]?.images, !imgs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(imgs, id: \.self) { name in
+                            NoteImageThumb(name: name, remove: { removeImage(name) })
+                        }
+                    }
+                }.frame(height: 124)
+            }
+            Text("Tip: click into the note and hold \(store.settings.hotkey.label) to dictate. Paste or drop images to attach them.").font(.sans(12.5)).foregroundStyle(Theme.ink3)
         }
         .padding(.horizontal, 48).padding(.vertical, 32)
+        .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
+            for p in providers {
+                if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                    p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                        guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil),
+                              let img = NSImage(contentsOf: url) else { return }
+                        DispatchQueue.main.async { addImage(img) }
+                    }
+                } else if p.canLoadObject(ofClass: NSImage.self) {
+                    _ = p.loadObject(ofClass: NSImage.self) { obj, _ in
+                        if let img = obj as? NSImage { DispatchQueue.main.async { addImage(img) } }
+                    }
+                }
+            }
+            return true
+        }
+        .onAppear { installPasteMonitor() }
+        .onDisappear { removePasteMonitor() }
+    }
+
+    @State private var pasteMonitor: Any?
+
+    /// Cmd+V with an image on the clipboard (and no text) attaches it to the note.
+    private func installPasteMonitor() {
+        removePasteMonitor()
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command, e.charactersIgnoringModifiers == "v" else { return e }
+            let pb = NSPasteboard.general
+            if pb.string(forType: .string) == nil, let img = NoteImages.imageFromPasteboard(pb) {
+                addImage(img); return nil
+            }
+            return e
+        }
+    }
+    private func removePasteMonitor() {
+        if let m = pasteMonitor { NSEvent.removeMonitor(m); pasteMonitor = nil }
+    }
+
+    private func addImage(_ img: NSImage) {
+        guard let name = NoteImages.save(img) else { return }
+        store.notes[index].images.append(name)
+        store.notes[index].updated = Date()
+    }
+    private func removeImage(_ name: String) {
+        store.notes[index].images.removeAll { $0 == name }
+        store.notes[index].updated = Date()
+        NoteImages.delete(name)
     }
 
     private func run(_ t: Transform) {
@@ -1164,4 +1225,57 @@ struct NoteEditor: View {
 
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
+
+enum NoteImages {
+    static func url(_ name: String) -> URL { Paths.notes.appendingPathComponent(name) }
+
+    static func imageFromPasteboard(_ pb: NSPasteboard) -> NSImage? {
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           let u = urls.first, let img = NSImage(contentsOf: u) { return img }
+        if let objs = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let img = objs.first { return img }
+        return nil
+    }
+
+    /// Stores the image as PNG and returns its file name.
+    static func save(_ img: NSImage) -> String? {
+        guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let name = "\(UUID().uuidString).png"
+        do { try png.write(to: url(name)); return name } catch { Log.write("note image save failed: \(error)"); return nil }
+    }
+
+    static func delete(_ name: String) { try? FileManager.default.removeItem(at: url(name)) }
+}
+
+struct NoteImageThumb: View {
+    let name: String
+    let remove: () -> Void
+    @State private var hover = false
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            if let img = NSImage(contentsOf: NoteImages.url(name)) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: 160, height: 112).clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+                    .onTapGesture { NSWorkspace.shared.open(NoteImages.url(name)) }
+                    .contextMenu {
+                        Button("Copy image") { NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([img]) }
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([NoteImages.url(name)]) }
+                        Button("Remove", role: .destructive, action: remove)
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: 10).fill(Theme.card).frame(width: 160, height: 112)
+                    .overlay(Text("Missing").font(.sans(12)).foregroundStyle(Theme.ink3))
+            }
+            if hover {
+                Button(action: remove) {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 22, height: 22).background(Circle().fill(Color.black.opacity(0.7)))
+                }.buttonStyle(.plain).padding(6)
+            }
+        }
+        .onHover { hover = $0 }
+    }
 }

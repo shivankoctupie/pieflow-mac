@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     lazy var models = ModelManager()
     lazy var llmBox = LLMBox(llm: llm, engine: engine)
     lazy var updater = Updater(store: store)
+    let meetings = MeetingWatcher()
+    let meetingPrompt = MeetingPrompt()
     let router = Router()
     lazy var flowBar = FlowBarController(dictation: dictation, store: store)
 
@@ -28,9 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupStatusItem()
         flowBar.show()
         dictation.startListening()
+        dictation.keepMicWarm()
         store.pruneAudio()
         transcriber.warmUpLocal()
         updater.startSchedule()
+        meetings.onStart = { [weak self] c in self?.callStarted(c) }
+        meetings.onEnd = { [weak self] c in self?.callEnded(c) }
+        meetings.start()
         NotificationCenter.default.addObserver(forName: .showOnboarding, object: nil, queue: .main) { [weak self] _ in self?.showOnboarding() }
         if CommandLine.arguments.contains("--update-test") {
             UpdateTest.run(self)
@@ -157,6 +163,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = main
     }
 
+    private func callStarted(_ c: MeetingWatcher.Candidate) {
+        guard !notetaker.isRecording else { return }
+        let fmt = DateFormatter(); fmt.dateFormat = "MMM d, h:mm a"
+        let title = "\(c.name) call \(fmt.string(from: Date()))"
+        switch store.settings.meetingAutoRecord {
+        case .never: return
+        case .always:
+            Task { @MainActor in await notetaker.start(title: title, detectedApp: c.bundleID) }
+        case .ask:
+            meetingPrompt.show(appName: c.name) { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in await self.notetaker.start(title: title, detectedApp: c.bundleID) }
+            }
+        }
+    }
+
+    private func callEnded(_ c: MeetingWatcher.Candidate) {
+        meetingPrompt.close()
+        guard store.settings.meetingAutoStop, notetaker.isRecording, notetaker.detectedApp == c.bundleID else { return }
+        Task { @MainActor in await notetaker.stop() }
+    }
+
     @objc func openSettings() { showMain(); router.showSettings = true }
     @objc func toggleNotetaker() {
         Task { @MainActor in
@@ -197,6 +225,9 @@ extension AppDelegate: NSMenuDelegate {
 
 if CommandLine.arguments.contains("--selftest") {
     exit(SelfTest.run())
+}
+if CommandLine.arguments.contains("--mic-test") {
+    exit(SelfTest.micTest())
 }
 if CommandLine.arguments.contains("--aec-probe") {
     exit(SelfTest.aecProbe())

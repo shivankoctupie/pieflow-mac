@@ -79,6 +79,7 @@ struct SettingsView: View {
             .background(Color.white)
         }
         .frame(width: 940, height: 680)
+        .textSelection(.enabled)
     }
 }
 
@@ -99,12 +100,12 @@ struct GeneralSettings: View {
                     dictation.hotkeys.hotkey = $0
                 }), options: HotkeyChoice.allCases.map { ($0, $0.label) })
             }
-            SettingsRow(title: "Microphone", subtitle: store.settings.microphoneUID.flatMap { AudioDevices.device(uid: $0)?.name } ?? "System default (\(AudioDevices.defaultInputName()))") {
+            SettingsRow(title: "Microphone", subtitle: micSubtitle) {
                 ThemedPicker(selection: $store.settings.microphoneUID,
-                             options: [(String?.none, "System default")] + devices.map { (Optional($0.uid), $0.name) })
+                             options: [(String?.none, "Automatic")] + devices.map { (Optional($0.uid), $0.name) })
                 .onAppear { devices = AudioDevices.inputs() }
             }
-            SettingsRow(title: "Isolate my voice", subtitle: "Cancels audio playing through this Mac's speakers and suppresses background noise, so music, videos or the other side of a call are not transcribed. Turn off only if your microphone misbehaves with it.") {
+            SettingsRow(title: "Isolate my voice", subtitle: "When sound is playing through the Mac's own speakers, cancels it and suppresses background noise so only you are transcribed. Stays off on headphones and earbuds, where it is not needed and only lowers quality.") {
                 PillToggle(isOn: $store.settings.voiceIsolation)
             }
             SettingsRow(title: "Dictation Language", subtitle: languageName(store.settings.language)) {
@@ -126,6 +127,19 @@ struct GeneralSettings: View {
             }
             .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.accentSoft))
         }
+    }
+
+    private var micSubtitle: String {
+        let c = AudioDevices.choose(preferredUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
+        if store.settings.microphoneUID == nil, let d = c.device {
+            return (AudioDevices.defaultInput?.isBluetooth == true)
+                ? "Using \(d.name). Your Bluetooth earbuds' mic is skipped: it runs at 16 kHz over the headset profile, opens late and lowers playback quality."
+                : "Using \(d.name)"
+        }
+        if let d = c.device {
+            return d.isBluetooth ? "\(d.name) (Bluetooth headset mic: expect lower quality and a slow start; Automatic is recommended)" : d.name
+        }
+        return "Pinned microphone is not connected, falling back to the system default"
     }
 
     static let languages: [(String, String)] = [
@@ -322,6 +336,12 @@ struct NotetakerSettings: View {
             SettingsRow(title: "Capture the other side of calls", subtitle: "Records system audio with ScreenCaptureKit. Needs Screen & System Audio Recording permission. Turn off to record your mic only.") {
                 PillToggle(isOn: $store.settings.notetakerSystemAudio)
             }
+            SettingsRow(title: "When a call starts", subtitle: "PieFlow notices when Zoom, Teams, FaceTime, Slack, Meet in a browser, or another call app opens the microphone.") {
+                ThemedPicker(selection: $store.settings.meetingAutoRecord, options: MeetingAutoRecord.allCases.map { ($0, $0.label) }, width: 210)
+            }
+            SettingsRow(title: "Stop when the call ends", subtitle: "A recording started from a detected call stops about 20 seconds after that app releases the microphone.") {
+                PillToggle(isOn: $store.settings.meetingAutoStop)
+            }
             SettingsRow(title: "Summaries", subtitle: LLM.claudeCLI != nil ? "Groq or xAI if a key is set, otherwise your local Claude Code CLI." : "Uses your Groq or xAI key.", divider: false) {
                 EmptyView()
             }
@@ -436,6 +456,7 @@ struct HelpView: View {
             }
         }
         .padding(32).frame(width: 640).background(Theme.page)
+        .textSelection(.enabled)
     }
     private func help(_ t: String, _ d: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {

@@ -121,6 +121,33 @@ struct Note: Codable, Identifiable, Hashable {
     var title: String = "Untitled"
     var body: String = ""
     var updated = Date()
+    /// File names inside Paths.notes (PNG), pasted or dropped into the note.
+    var images: [String] = []
+
+    init() {}
+    init(title: String, body: String) { self.title = title; self.body = body }
+
+    private enum CodingKeys: String, CodingKey { case id, title, body, updated, images }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        body = try c.decode(String.self, forKey: .body)
+        updated = try c.decode(Date.self, forKey: .updated)
+        images = (try? c.decodeIfPresent([String].self, forKey: .images)) ?? []
+    }
+}
+
+enum MeetingAutoRecord: String, Codable, CaseIterable, Identifiable {
+    case ask, always, never
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .ask: return "Ask me"
+        case .always: return "Record automatically"
+        case .never: return "Do nothing"
+        }
+    }
 }
 
 struct TranscriptSegment: Codable, Hashable {
@@ -229,6 +256,8 @@ struct Settings: Codable {
     ]
     var keepAudioDays = 7
     var notetakerSystemAudio = true
+    var meetingAutoRecord: MeetingAutoRecord = .ask
+    var meetingAutoStop = true
     var dismissedHero: [String] = []
     var scratchpadInFlowBar = false
 
@@ -264,6 +293,8 @@ struct Settings: Codable {
         styles = v(.styles, d.styles)
         keepAudioDays = v(.keepAudioDays, d.keepAudioDays)
         notetakerSystemAudio = v(.notetakerSystemAudio, d.notetakerSystemAudio)
+        meetingAutoRecord = v(.meetingAutoRecord, d.meetingAutoRecord)
+        meetingAutoStop = v(.meetingAutoStop, d.meetingAutoStop)
         dismissedHero = v(.dismissedHero, d.dismissedHero)
         scratchpadInFlowBar = v(.scratchpadInFlowBar, d.scratchpadInFlowBar)
     }

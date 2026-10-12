@@ -55,7 +55,7 @@ struct MainView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 18).fill(Theme.page)
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.line, lineWidth: 1))
-                pageView.clipShape(RoundedRectangle(cornerRadius: 18))
+                pageView.clipShape(RoundedRectangle(cornerRadius: 18)).textSelection(.enabled)
             }
             .padding(.trailing, 10).padding(.bottom, 10).padding(.leading, router.sidebarCollapsed ? 10 : 0)
         }
