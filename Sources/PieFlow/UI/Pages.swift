@@ -1052,6 +1052,8 @@ struct ScratchpadPage: View {
     @State private var search = ""
     @State private var searching = false
 
+    @State private var dropTarget = false
+
     var body: some View {
         if let id = selected, let i = store.notes.firstIndex(where: { $0.id == id }) {
             NoteEditor(index: i) { selected = nil }
@@ -1104,6 +1106,27 @@ struct ScratchpadPage: View {
                 }
                 .padding(.horizontal, 40).padding(.vertical, 36)
             }
+            .onDrop(of: [.image, .fileURL], isTargeted: $dropTarget) { providers in
+                NoteImages.load(providers) { imgs in
+                    guard !imgs.isEmpty else { return }
+                    var n = Note()
+                    let f = DateFormatter(); f.dateFormat = "MMM d, h:mm a"
+                    n.title = "Screenshot \(f.string(from: Date()))"
+                    n.images = imgs.compactMap(NoteImages.save)
+                    store.notes.insert(n, at: 0)
+                    selected = n.id
+                }
+                return true
+            }
+            .overlay {
+                if dropTarget {
+                    RoundedRectangle(cornerRadius: 18).stroke(Theme.accentLine, lineWidth: 2)
+                        .overlay(Text("Drop to make a new note").font(.sans(15, .medium)).foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.accentSoft)))
+                        .allowsHitTesting(false)
+                }
+            }
         }
     }
 
@@ -1148,9 +1171,9 @@ struct NoteEditor: View {
             TextField("Untitled", text: Binding(get: { store.notes[safe: index]?.title ?? "" },
                                                 set: { store.notes[index].title = $0; store.notes[index].updated = Date() }))
                 .textFieldStyle(.plain).font(.serif(32))
-            TextEditor(text: Binding(get: { store.notes[safe: index]?.body ?? "" },
-                                     set: { store.notes[index].body = $0; store.notes[index].updated = Date() }))
-                .font(.sans(16)).lineSpacing(5).scrollContentBackground(.hidden)
+            NoteTextView(text: Binding(get: { store.notes[safe: index]?.body ?? "" },
+                                       set: { store.notes[index].body = $0; store.notes[index].updated = Date() }),
+                         onImages: { imgs in imgs.forEach(addImage) })
             if let imgs = store.notes[safe: index]?.images, !imgs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -1163,43 +1186,14 @@ struct NoteEditor: View {
             Text("Tip: click into the note and hold \(store.settings.hotkey.label) to dictate. Paste or drop images to attach them.").font(.sans(12.5)).foregroundStyle(Theme.ink3)
         }
         .padding(.horizontal, 48).padding(.vertical, 32)
-        .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
-            for p in providers {
-                if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                    p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                        guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil),
-                              let img = NSImage(contentsOf: url) else { return }
-                        DispatchQueue.main.async { addImage(img) }
-                    }
-                } else if p.canLoadObject(ofClass: NSImage.self) {
-                    _ = p.loadObject(ofClass: NSImage.self) { obj, _ in
-                        if let img = obj as? NSImage { DispatchQueue.main.async { addImage(img) } }
-                    }
-                }
-            }
+        .onDrop(of: [.image, .fileURL], isTargeted: $dropTarget) { providers in
+            NoteImages.load(providers) { imgs in imgs.forEach(addImage) }
             return true
         }
-        .onAppear { installPasteMonitor() }
-        .onDisappear { removePasteMonitor() }
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(dropTarget ? Theme.accentLine : .clear, lineWidth: 2).padding(24))
     }
 
-    @State private var pasteMonitor: Any?
-
-    /// Cmd+V with an image on the clipboard (and no text) attaches it to the note.
-    private func installPasteMonitor() {
-        removePasteMonitor()
-        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command, e.charactersIgnoringModifiers == "v" else { return e }
-            let pb = NSPasteboard.general
-            if pb.string(forType: .string) == nil, let img = NoteImages.imageFromPasteboard(pb) {
-                addImage(img); return nil
-            }
-            return e
-        }
-    }
-    private func removePasteMonitor() {
-        if let m = pasteMonitor { NSEvent.removeMonitor(m); pasteMonitor = nil }
-    }
+    @State private var dropTarget = false
 
     private func addImage(_ img: NSImage) {
         guard let name = NoteImages.save(img) else { return }
@@ -1277,5 +1271,133 @@ struct NoteImageThumb: View {
             }
         }
         .onHover { hover = $0 }
+    }
+}
+
+/// Reads every image a drag or paste can carry: image files (screenshots from the floating thumbnail
+/// or Finder), raw image data (copied from a browser or Preview), and promised files.
+extension NoteImages {
+    static func images(from pb: NSPasteboard) -> [NSImage] {
+        var out: [NSImage] = []
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true,
+                                                                        .urlReadingContentsConformToTypes: [UTType.image.identifier]]) as? [URL] {
+            out += urls.compactMap { NSImage(contentsOf: $0) }
+        }
+        if out.isEmpty, let imgs = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage] { out += imgs }
+        return out
+    }
+
+    static func pasteboardHasImage(_ pb: NSPasteboard) -> Bool {
+        pb.canReadObject(forClasses: [NSImage.self], options: nil) ||
+        pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true,
+                                                              .urlReadingContentsConformToTypes: [UTType.image.identifier]])
+    }
+}
+
+/// The note body: an NSTextView that hands dropped or pasted images to the note instead of inserting
+/// file paths, and otherwise behaves like a plain text editor.
+struct NoteTextView: NSViewRepresentable {
+    @Binding var text: String
+    let onImages: ([NSImage]) -> Void
+
+    final class ImageAwareTextView: NSTextView {
+        var onImages: (([NSImage]) -> Void)?
+
+        override func paste(_ sender: Any?) {
+            let pb = NSPasteboard.general
+            if pb.string(forType: .string) == nil, NoteImages.pasteboardHasImage(pb) {
+                onImages?(NoteImages.images(from: pb)); return
+            }
+            super.paste(sender)
+        }
+
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            NoteImages.pasteboardHasImage(sender.draggingPasteboard) ? .copy : super.draggingEntered(sender)
+        }
+        override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+            NoteImages.pasteboardHasImage(sender.draggingPasteboard) ? .copy : super.draggingUpdated(sender)
+        }
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            let pb = sender.draggingPasteboard
+            if NoteImages.pasteboardHasImage(pb) {
+                let imgs = NoteImages.images(from: pb)
+                if !imgs.isEmpty { onImages?(imgs); return true }
+            }
+            return super.performDragOperation(sender)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: NoteTextView
+        init(_ p: NoteTextView) { parent = p }
+        func textDidChange(_ n: Notification) {
+            guard let tv = n.object as? NSTextView else { return }
+            parent.text = tv.string
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        let tv = ImageAwareTextView()
+        tv.delegate = context.coordinator
+        tv.onImages = onImages
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.font = NSFont(name: "Figtree-Regular", size: 16) ?? NSFont.systemFont(ofSize: 16)
+        tv.textColor = NSColor(Theme.ink)
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.allowsUndo = true
+        tv.textContainerInset = NSSize(width: 0, height: 6)
+        tv.autoresizingMask = [.width]
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.textContainer?.widthTracksTextView = true
+        tv.registerForDraggedTypes([.fileURL, .png, .tiff])
+        let style = NSMutableParagraphStyle(); style.lineSpacing = 5
+        tv.defaultParagraphStyle = style
+        tv.typingAttributes = [.font: tv.font!, .foregroundColor: tv.textColor!, .paragraphStyle: style]
+        tv.string = text
+        scroll.documentView = tv
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? ImageAwareTextView else { return }
+        context.coordinator.parent = self
+        tv.onImages = onImages
+        if tv.string != text { tv.string = text }
+    }
+}
+
+
+extension NoteImages {
+    /// Resolves SwiftUI drop providers (file URLs or image data) to images, on the main thread.
+    static func load(_ providers: [NSItemProvider], done: @escaping ([NSImage]) -> Void) {
+        let group = DispatchGroup()
+        var found: [NSImage] = []
+        let lock = NSLock()
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                group.enter()
+                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    defer { group.leave() }
+                    let url = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+                    if let url, let img = NSImage(contentsOf: url) { lock.lock(); found.append(img); lock.unlock() }
+                }
+            } else if p.canLoadObject(ofClass: NSImage.self) {
+                group.enter()
+                _ = p.loadObject(ofClass: NSImage.self) { obj, _ in
+                    defer { group.leave() }
+                    if let img = obj as? NSImage { lock.lock(); found.append(img); lock.unlock() }
+                }
+            }
+        }
+        group.notify(queue: .main) { done(found) }
     }
 }

@@ -133,6 +133,27 @@ enum SelfTest {
         return s.count > 16_000 ? 0 : 1
     }
 
+    /// `PieFlow --drop-test`: checks the pasteboard reader against the two shapes a screenshot drag has.
+    static func dropTest() -> Int32 {
+        let img = NSImage(size: NSSize(width: 40, height: 30), flipped: false) { r in NSColor.orange.setFill(); r.fill(); return true }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-drop-\(UUID().uuidString).png")
+        guard let name = NoteImages.save(img) else { print("FAIL save"); return 1 }
+        try? FileManager.default.copyItem(at: NoteImages.url(name), to: tmp)
+        NoteImages.delete(name)
+        var ok = true
+        let pb1 = NSPasteboard(name: NSPasteboard.Name("pieflow-test-1")); pb1.clearContents(); pb1.writeObjects([tmp as NSURL])
+        let a = NoteImages.pasteboardHasImage(pb1), n1 = NoteImages.images(from: pb1).count
+        print("file URL drag: hasImage=\(a) images=\(n1)"); ok = ok && a && n1 == 1
+        let pb2 = NSPasteboard(name: NSPasteboard.Name("pieflow-test-2")); pb2.clearContents(); pb2.writeObjects([img])
+        let b = NoteImages.pasteboardHasImage(pb2), n2 = NoteImages.images(from: pb2).count
+        print("raw image drag: hasImage=\(b) images=\(n2)"); ok = ok && b && n2 == 1
+        let pb3 = NSPasteboard(name: NSPasteboard.Name("pieflow-test-3")); pb3.clearContents(); pb3.setString("hello", forType: .string)
+        let c = NoteImages.pasteboardHasImage(pb3)
+        print("plain text drag: hasImage=\(c) (must be false)"); ok = ok && !c
+        try? FileManager.default.removeItem(at: tmp)
+        print(ok ? "DROP TEST PASS" : "DROP TEST FAIL"); return ok ? 0 : 1
+    }
+
     static func run() -> Int32 {
         print("PieFlow self test, version \(AppInfo.version), \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let store = Store.shared

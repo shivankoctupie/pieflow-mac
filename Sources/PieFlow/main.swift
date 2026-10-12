@@ -226,6 +226,9 @@ extension AppDelegate: NSMenuDelegate {
 if CommandLine.arguments.contains("--selftest") {
     exit(SelfTest.run())
 }
+if CommandLine.arguments.contains("--drop-test") {
+    exit(SelfTest.dropTest())
+}
 if CommandLine.arguments.contains("--mic-test") {
     exit(SelfTest.micTest())
 }

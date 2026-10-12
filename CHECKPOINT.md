@@ -10,4 +10,4 @@ Done and verified
 
 Open
 - Speaker path (AVAudioEngine + voice processing) after the process() rewrite: evidence from the format probe only (native tap on the VP node carries audio on all channels). Confirm from pieflow.log: a line `mic: engine ... isolation on` followed by `stt ok`. Or run `open -n -W build/PieFlow.app --args --aec-test` with Bluetooth off.
-- Paste of an image into a note is tested by code review and the thumbnail render only; the Cmd+V monitor is a user-level check.
+- Image drop and paste go through NoteTextView; the pasteboard reader is covered by --drop-test, the live drag is a user-level check.
