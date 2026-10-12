@@ -105,7 +105,10 @@ struct GeneralSettings: View {
                              options: [(String?.none, "Automatic")] + devices.map { (Optional($0.uid), $0.name) })
                 .onAppear { devices = AudioDevices.inputs() }
             }
-            SettingsRow(title: "Isolate my voice", subtitle: "When sound is playing through the Mac's own speakers, cancels it and suppresses background noise so only you are transcribed. Stays off on headphones and earbuds, where it is not needed and only lowers quality.") {
+            SettingsRow(title: "Apple Voice Isolation", subtitle: micModeSubtitle) {
+                micModeButton
+            }
+            SettingsRow(title: "Cancel speaker audio", subtitle: "When sound plays through the Mac's own speakers, cancels it so music or a video is not transcribed. Stays off on headphones and earbuds, where it is not needed.") {
                 PillToggle(isOn: $store.settings.voiceIsolation)
             }
             SettingsRow(title: "Dictation Language", subtitle: languageName(store.settings.language)) {
@@ -126,6 +129,46 @@ struct GeneralSettings: View {
                 }
             }
             .padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Theme.accentSoft))
+        }
+    }
+
+    @ViewBuilder private var micModeButton: some View {
+        if micModeBusy {
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text(micModeActive).font(.sans(14)) }
+        } else {
+            Button("Set up") { chooseMicMode() }.buttonStyle(PrimaryButton()).fixedSize()
+        }
+    }
+
+    @State private var micModeBusy = false
+    @State private var micModeActive = ""
+    @State private var micModeProbe: MicRecorder?
+
+    private var micModeSubtitle: String {
+        if micModeBusy {
+            return "Listening for 40 s. Now click the orange microphone icon in the menu bar (top right), then choose Voice Isolation under Mic Mode. Current mode: \(micModeActive)."
+        }
+        return MicMode.isVoiceIsolation
+            ? "On. Apple's own background noise and voice removal (the same as FaceTime) is active for PieFlow."
+            : "Apple's own background noise and voice removal, the same as FaceTime. One time setup: press Set up, click the orange microphone icon in the menu bar, pick Voice Isolation under Mic Mode. macOS remembers it for PieFlow."
+    }
+
+    /// Opens the mic briefly so Control Center exposes the mode picker for PieFlow, then shows it.
+    private func chooseMicMode() {
+        guard !micModeBusy else { MicMode.showPicker(); return }
+        let m = MicRecorder()
+        do { try m.start(deviceUID: store.settings.microphoneUID, voiceIsolation: false) } catch { Log.write("mic mode probe: \(error.localizedDescription)"); return }
+        micModeProbe = m
+        micModeBusy = true
+        micModeActive = MicMode.activeName
+        var ticks = 0
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { t in
+            ticks += 1
+            micModeActive = MicMode.activeName
+            if ticks >= 40 || !micModeBusy || (ticks > 3 && MicMode.isVoiceIsolation) {
+                t.invalidate(); m.stop(); micModeProbe = nil; micModeBusy = false
+                Log.write("mic mode after setup: \(MicMode.activeName)")
+            }
         }
     }
 

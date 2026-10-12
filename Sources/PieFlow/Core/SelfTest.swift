@@ -120,7 +120,22 @@ enum SelfTest {
         }
         do { try mic.start(deviceUID: pinned, voiceIsolation: store.settings.voiceIsolation) } catch { Log.write("mic-test FAIL start: \(error)"); return 1 }
         // The engine runs on the main run loop; spin it so taps, the watchdog and config changes fire.
-        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        RunLoop.main.run(until: Date().addingTimeInterval(min(seconds, 1.0)))
+        Log.write("mic-test active microphone mode while capturing: \(MicMode.activeName)")
+        if args.contains("--pick-mode") {
+            MicMode.showPicker()
+            if let i = args.firstIndex(of: "--shot"), i + 1 < args.count {
+                let path = args[i + 1]
+                RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+                if let cg = CGDisplayCreateImage(CGMainDisplayID()) {
+                    let rep = NSBitmapImageRep(cgImage: cg)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                    Log.write("mic-test screenshot saved to \(path)")
+                } else { Log.write("mic-test screenshot failed (no screen recording permission?)") }
+            }
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(max(0, seconds - 1.0)))
+        Log.write("mic-test active microphone mode at end of capture: \(MicMode.activeName)")
         let s = mic.stop()
         let firstSound = s.firstIndex { abs($0) > 0.0005 } ?? s.count
         let startMs = Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000)

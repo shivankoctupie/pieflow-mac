@@ -110,7 +110,7 @@ final class DictationController: ObservableObject {
         if store.settings.muteWhileDictating { SystemAudio.mute(true) }
         maxTimer?.invalidate()
         maxTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: false) { [weak self] _ in self?.stopAndProcess() }
-        Log.write("dictation start (handsFree=\(handsFree)) app=\(targetApp?.localizedName ?? "?") micStartTook=\(Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000))ms")
+        Log.write("dictation start (handsFree=\(handsFree)) app=\(targetApp?.localizedName ?? "?") micStartTook=\(Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000))ms micMode=\(MicMode.activeName)")
     }
 
     func cancel(silent: Bool) {

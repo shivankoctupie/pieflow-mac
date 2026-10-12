@@ -551,3 +551,20 @@ enum WAV {
         return sqrt(sum / Float(s.count))
     }
 }
+
+
+/// Apple's system microphone modes (Standard, Voice Isolation, Wide Spectrum). The user picks one per
+/// app in Control Center while the app is capturing; macOS remembers it. Voice Isolation is Apple's
+/// ML noise and background voice removal, far better than anything we could do by hand.
+enum MicMode {
+    static var activeName: String {
+        switch AVCaptureDevice.activeMicrophoneMode {
+        case .voiceIsolation: return "Voice Isolation"
+        case .wideSpectrum: return "Wide Spectrum"
+        default: return "Standard"
+        }
+    }
+    static var isVoiceIsolation: Bool { AVCaptureDevice.activeMicrophoneMode == .voiceIsolation }
+    /// Opens the Control Center mic mode picker. Only meaningful while PieFlow has the microphone open.
+    static func showPicker() { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }
+}
