@@ -27,9 +27,10 @@ final class LLM {
             catch { errors.append("xAI: \(error.localizedDescription)") }
         }
         if allowCLI, let cli = Self.claudeCLI {
-            let (code, out, err) = try await Shell.run(cli, ["-p", "--output-format", "text", system + "\n\n" + user], timeout: 300)
+            let (code, out, err) = try await Shell.run(cli, ["-p", "--output-format", "text", system + "\n\n" + user], timeout: 600)
             if code == 0, !out.isEmpty { return out.trimmingCharacters(in: .whitespacesAndNewlines) }
-            errors.append("Claude CLI: \(err.prefix(200))")
+            Log.write("claude cli exit \(code): \(err.prefix(300)) \(out.prefix(120))")
+            errors.append("Claude CLI exit \(code): \(err.isEmpty ? "no output" : String(err.prefix(200)))")
         }
         throw PieError(errors.isEmpty ? "No AI provider set up. Add a Groq or xAI key in Settings." : errors.joined(separator: "\n"))
     }
@@ -69,6 +70,13 @@ final class LLM {
         return ids.sorted().first { id in !["whisper", "tts", "orpheus", "guard", "image", "embed", "safeguard", "allam"].contains { id.contains($0) } }
     }
 
+    func completeWithCLI(system: String, user: String) async throws -> String {
+        guard let cli = Self.claudeCLI else { throw PieError("Claude CLI not installed") }
+        let (code, out, err) = try await Shell.run(cli, ["-p", "--output-format", "text", system + "\n\n" + user], timeout: 900)
+        guard code == 0, !out.isEmpty else { Log.write("claude cli exit \(code): \(err.prefix(300))"); throw PieError("Claude CLI exit \(code)") }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func chat(url: String, key: String, model: String, system: String, user: String, timeout: TimeInterval, maxTokens: Int) async throws -> String {
         var req = URLRequest(url: URL(string: url)!, timeoutInterval: timeout)
         req.httpMethod = "POST"
@@ -97,10 +105,24 @@ final class TextEngine {
     let llm: LLM
     init(store: Store, llm: LLM) { self.store = store; self.llm = llm }
 
+    /// Short, already clean dictations skip the AI pass: it costs about 600 ms and changes nothing.
+    static func needsAI(_ text: String) -> Bool {
+        let words = text.split { $0.isWhitespace }.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+        if words.count > 10 { return true }
+        let markers: Set<String> = ["um", "uh", "erm", "hmm", "wait", "no", "scratch", "actually", "sorry", "mean", "correction", "paragraph", "line"]
+        if words.contains(where: markers.contains) { return true }
+        guard let f = text.first, f.isUppercase, let l = text.last, ".?!".contains(l) else { return true }
+        return false
+    }
+
     func process(_ raw: String, category: AppCategory, appName: String?) async -> String {
         var text = rules(raw)
         if let snip = exactSnippet(text) { return snip }
-        if store.settings.aiCleanup && llm.hasCloud && text.split(separator: " ").count >= 3 {
+        let t0 = Date()
+        if store.settings.aiCleanup && llm.hasCloud && text.split(separator: " ").count >= 3 && !Self.needsAI(text) {
+            Log.write("cleanup skipped (already clean, \(text.split(separator: " ").count) words)")
+            text = applyTone(text, category: category)
+        } else if store.settings.aiCleanup && llm.hasCloud && text.split(separator: " ").count >= 3 {
             do {
                 let polished = try await llm.complete(system: cleanupPrompt(category: category, appName: appName),
                                                       user: "<transcript>\n\(text)\n</transcript>", timeout: 6, maxTokens: 1024)
@@ -115,6 +137,7 @@ final class TextEngine {
             } catch {
                 Log.write("cleanup skipped: \(error.localizedDescription)")
             }
+            Log.write("cleanup took \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
         }
         text = applyStyleFallback(text, category: category)
         text = expandSnippets(text)
@@ -204,6 +227,10 @@ final class TextEngine {
     /// Without an LLM we can still honour the "very casual" style mechanically.
     private func applyStyleFallback(_ text: String, category: AppCategory) -> String {
         guard !(store.settings.aiCleanup && llm.hasCloud) else { return text }
+        return applyTone(text, category: category)
+    }
+
+    private func applyTone(_ text: String, category: AppCategory) -> String {
         switch store.settings.styles[category.rawValue] ?? .formal {
         case .veryCasual:
             var t = text.lowercased()

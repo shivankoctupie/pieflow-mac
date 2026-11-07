@@ -21,6 +21,8 @@ final class MeetingWatcher: ObservableObject {
         "com.webex.meetingmanager": "Webex",
         "com.hnc.Discord": "Discord",
         "com.google.Chrome": "Chrome",
+        "com.google.Chrome.app": "Google Meet",
+        "com.google.meet": "Google Meet",
         "com.google.Chrome.canary": "Chrome",
         "com.apple.Safari": "Safari",
         "company.thebrowser.Browser": "Arc",
@@ -82,15 +84,30 @@ final class MeetingWatcher: ObservableObject {
             guard u32(id, kAudioProcessPropertyIsRunningInput) != 0 else { return nil }
             let pid = u32(id, kAudioProcessPropertyPID)
             let bid = str(id, kAudioProcessPropertyBundleID)
-            guard pid != excludingPID, !bid.isEmpty, !bid.hasPrefix("com.apple.") else { return nil }
+            guard pid != excludingPID, !bid.isEmpty else { return nil }
+            // System daemons (coreaudiod, CoreSpeech, Siri) also hold the mic; only real Apple apps count.
+            if bid.hasPrefix("com.apple."), knownApp(for: bid) == nil { return nil }
             return (bid, pid)
         }
     }
 
+    /// Chrome, Edge and friends hold the mic from helper processes ("com.google.Chrome.helper") and
+    /// PWAs from "com.google.Chrome.app.<id>", so match on prefix, longest known id first.
+    static func knownApp(for bundleID: String) -> String? {
+        if let exact = knownApps[bundleID] { return exact }
+        let hit = knownApps.keys.filter { bundleID.hasPrefix($0 + ".") || bundleID.hasPrefix($0) }.max { $0.count < $1.count }
+        return hit.map { knownApps[$0]! }
+    }
+    private var reportedUnknown: Set<String> = []
+
     private func tick() {
         let using = Self.processesUsingMic(excludingPID: selfPID)
         let now = Date()
-        let candidates = using.filter { acceptAny || Self.knownApps[$0.bundleID] != nil }
+        for u in using where Self.knownApp(for: u.bundleID) == nil && !reportedUnknown.contains(u.bundleID) {
+            reportedUnknown.insert(u.bundleID)
+            Log.write("meeting watcher: \(u.bundleID) is using the mic but is not a known call app")
+        }
+        let candidates = using.filter { acceptAny || Self.knownApp(for: $0.bundleID) != nil }
         for c in candidates where firstSeen[c.bundleID] == nil { firstSeen[c.bundleID] = now }
         firstSeen = firstSeen.filter { key, _ in candidates.contains { $0.bundleID == key } }
 
@@ -105,7 +122,7 @@ final class MeetingWatcher: ObservableObject {
             return
         }
         if let (bid, first) = firstSeen.min(by: { $0.value < $1.value }), now.timeIntervalSince(first) >= startAfter {
-            let c = Candidate(bundleID: bid, name: Self.knownApps[bid] ?? Self.appName(bid) ?? bid)
+            let c = Candidate(bundleID: bid, name: Self.knownApp(for: bid) ?? Self.appName(bid) ?? bid)
             active = c
             lastSeen = now
             Log.write("meeting watcher: \(c.name) (\(bid)) has had the mic for \(Int(startAfter)) s, call started")

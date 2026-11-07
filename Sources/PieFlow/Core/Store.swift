@@ -53,6 +53,8 @@ final class Store: ObservableObject {
     @Published var meetings: [Meeting] { didSet { save("meetings.json", meetings) } }
     @Published var fixesCount: Int { didSet { UserDefaults.standard.set(fixesCount, forKey: "fixesCount") } }
 
+    /// Meetings whose summary was interrupted by a quit; the notetaker picks these up at launch.
+    var needsSummary: [UUID] = []
     private var pending: [String: DispatchWorkItem] = [:]
     private let ioQueue = DispatchQueue(label: "pieflow.store")
 
@@ -68,8 +70,14 @@ final class Store: ObservableObject {
         fixesCount = UserDefaults.standard.integer(forKey: "fixesCount")
         // A meeting that was recording when the app quit can never resume.
         for i in meetings.indices where meetings[i].status == .recording || meetings[i].status == .processing {
-            meetings[i].status = .failed
-            meetings[i].errorMessage = "PieFlow quit before this meeting finished processing."
+            if meetings[i].segments.isEmpty {
+                meetings[i].status = .failed
+                meetings[i].errorMessage = "PieFlow quit before this meeting finished processing."
+            } else {
+                meetings[i].status = .ready
+                meetings[i].errorMessage = "PieFlow quit before the summary was written. Use Regenerate summary."
+                needsSummary.append(meetings[i].id)
+            }
         }
     }
 
@@ -154,6 +162,15 @@ final class Store: ObservableObject {
         let prev = history.filter { $0.date >= startPrev && $0.date < startThis }.reduce(0) { $0 + $1.wordCount }
         guard prev > 0 else { return nil }
         return Int((Double(this - prev) / Double(prev) * 100).rounded())
+    }
+
+    /// A correction the user made becomes a Dictionary entry (word plus the misheard form).
+    func learn(heard: String, corrected: String) {
+        if let i = dictionary.firstIndex(where: { $0.word.lowercased() == corrected.lowercased() }) {
+            if !dictionary[i].misheard.contains(where: { $0.lowercased() == heard.lowercased() }) { dictionary[i].misheard.append(heard) }
+        } else {
+            dictionary.append(DictionaryWord(word: corrected, misheard: [heard]))
+        }
     }
 
     func pruneAudio() {

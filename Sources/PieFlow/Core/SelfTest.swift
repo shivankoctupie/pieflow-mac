@@ -169,6 +169,91 @@ enum SelfTest {
         print(ok ? "DROP TEST PASS" : "DROP TEST FAIL"); return ok ? 0 : 1
     }
 
+    /// `--pipeline-test`: a synthesized sentence through upload, transcription and cleanup, with timings.
+    static func pipelineTest() -> Int32 {
+        let store = Store.shared
+        let transcriber = Transcriber(store: store)
+        let engine = TextEngine(store: store, llm: LLM(store: store))
+        let aiff = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-pipe.aiff")
+        let say = Process(); say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-o", aiff.path, "um so I think we should uh ship the pricing page on Tuesday, no wait, Friday"]
+        try? say.run(); say.waitUntilExit()
+        guard let samples = try? WAV.readMono16k(aiff) else { print("FAIL sample"); return 1 }
+        let up = Transcriber.upload(for: samples)
+        print("audio \(String(format: "%.1f", Double(samples.count) / 16_000)) s, upload \(up.data.count / 1024) KB as \(up.filename)")
+        transcriber.warmConnection()
+        Thread.sleep(forTimeInterval: 0.5)
+        for round in 1...3 {
+            let t0 = Date()
+            switch await_({ try await transcriber.transcribe(samples) }) {
+            case .failure(let e): print("FAIL stt: \(e.localizedDescription)"); return 1
+            case .success(let r):
+                let t1 = Date()
+                let cleaned = await_({ await engine.process(r.text, category: .work, appName: "Slack") })
+                let t2 = Date()
+                print(String(format: "round %d: stt %d ms, cleanup %d ms, total %d ms  \"%@\"", round,
+                             Int(t1.timeIntervalSince(t0) * 1000), Int(t2.timeIntervalSince(t1) * 1000), Int(t2.timeIntervalSince(t0) * 1000),
+                             (try? cleaned.get()) ?? ""))
+            }
+        }
+        let short = await_({ await engine.process("Can you send me the deck?", category: .work, appName: "Slack") })
+        print("short clean sentence -> \"\((try? short.get()) ?? "")\" (should skip AI, see log)")
+        print("PIPELINE TEST DONE"); return 0
+    }
+
+    /// `--watcher-test`: bundle id matching for the call detector.
+    static func watcherTest() -> Int32 {
+        let cases: [(String, String?)] = [("com.google.Chrome.helper", "Chrome"), ("com.google.Chrome", "Chrome"), ("com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan", "Google Meet"),
+                                          ("com.apple.Safari", "Safari"), ("com.apple.FaceTime", "FaceTime"), ("com.apple.coreaudiod", nil), ("com.apple.CoreSpeech", nil),
+                                          ("us.zoom.xos", "Zoom"), ("com.microsoft.teams2", "Microsoft Teams"), ("net.whatsapp.WhatsApp", "WhatsApp"), ("com.unknown.app", nil)]
+        var ok = true
+        for (bid, want) in cases {
+            let got = MeetingWatcher.knownApp(for: bid)
+            print("\(got == want ? "PASS" : "FAIL") \(bid) -> \(got ?? "nil")")
+            ok = ok && got == want
+        }
+        print(ok ? "WATCHER TEST PASS" : "WATCHER TEST FAIL"); return ok ? 0 : 1
+    }
+
+    /// `--edit-test`: the correction detector on realistic before and after texts.
+    static func editTest() -> Int32 {
+        let pasted = "Can we move the design review to Thursday? I need one more day on the on boarding flow."
+        let base = "Hello team.\n" + pasted + "\nThanks"
+        let cases: [(String, (String, String)?)] = [
+            ("Hello team.\n" + pasted.replacingOccurrences(of: "on boarding", with: "onboarding") + "\nThanks", nil),
+            ("Hello team.\n" + pasted.replacingOccurrences(of: "Thursday", with: "Tuesday") + "\nThanks", ("Thursday", "Tuesday")),
+            ("Hello team.\n" + pasted + " Also ping Priya.\nThanks", nil),
+            ("Hello team.\n" + pasted.replacingOccurrences(of: "design", with: "Design") + "\nThanks", nil),
+            ("Hello team.\n" + pasted.replacingOccurrences(of: "review", with: "Octupie") + "\nThanks", ("review", "Octupie")),
+        ]
+        var ok = true
+        for (current, want) in cases {
+            let got = EditWatcher.correction(baseline: base, current: current, pasted: pasted)
+            let match = (got == nil && want == nil) || (got != nil && want != nil && got! == want!)
+            print("\(match ? "PASS" : "FAIL") -> \(got.map { "\($0.0) => \($0.1)" } ?? "nil")")
+            ok = ok && match
+        }
+        print(ok ? "EDIT TEST PASS" : "EDIT TEST FAIL"); return ok ? 0 : 1
+    }
+
+    /// `--summarize-test`: writes the summary for the newest meeting that has a transcript but no summary.
+    static func summarizeTest() -> Int32 {
+        let store = Store.shared
+        guard let m = store.meetings.first(where: { !$0.segments.isEmpty && $0.summary.isEmpty }) else { print("no meeting needs a summary"); return 0 }
+        print("summarising \(m.title), \(m.segments.count) segments, \(m.transcriptText.count) chars")
+        let nt = Notetaker(store: store, transcriber: Transcriber(store: store), llm: LLM(store: store))
+        let t0 = Date()
+        // summarize() is main actor bound, so pump the run loop instead of blocking the main thread.
+        var finished = false
+        Task { @MainActor in await nt.summarize(m.id); finished = true }
+        while !finished, Date().timeIntervalSince(t0) < 1500 { RunLoop.main.run(until: Date().addingTimeInterval(0.5)) }
+        let done = store.meetings.first { $0.id == m.id }
+        print(String(format: "%.0f s, summary %d chars, error: %@", Date().timeIntervalSince(t0), done?.summary.count ?? 0, done?.errorMessage ?? "none"))
+        print((done?.summary ?? "").prefix(600))
+        store.flush()
+        return (done?.summary.isEmpty == false) ? 0 : 1
+    }
+
     static func run() -> Int32 {
         print("PieFlow self test, version \(AppInfo.version), \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let store = Store.shared

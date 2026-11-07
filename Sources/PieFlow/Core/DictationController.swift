@@ -24,6 +24,7 @@ final class DictationController: ObservableObject {
     private var levelTimer: Timer?
     private var maxTimer: Timer?
     private var messageWork: DispatchWorkItem?
+    let editWatcher = EditWatcher()
 
     init(store: Store, transcriber: Transcriber, engine: TextEngine) {
         self.store = store
@@ -31,6 +32,11 @@ final class DictationController: ObservableObject {
         self.engine = engine
         mic.onLevel = { [weak self] l in DispatchQueue.main.async { self?.level = self.map { $0.level * 0.4 + l * 0.6 } ?? l } }
         hotkeys.onEvent = { [weak self] e in self?.handle(e) }
+        editWatcher.onLearned = { [weak self] heard, corrected in
+            guard let self else { return }
+            self.store.learn(heard: heard, corrected: corrected)
+            self.flash("Learned \"\(corrected)\"", error: false)
+        }
     }
 
     /// Keeps a microphone pipeline prepared so the next fn press opens the mic in tens of milliseconds.
@@ -102,6 +108,8 @@ final class DictationController: ObservableObject {
         messageWork?.cancel()
         setPhase(.recording(handsFree: handsFree))
         Sounds.start()
+        transcriber.warmConnection()
+        editWatcher.stop()
         do {
             try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
         } catch {
@@ -136,16 +144,19 @@ final class DictationController: ObservableObject {
         setPhase(.processing)
         let app = targetApp
         let category = AppCategory.from(bundleID: app?.bundleIdentifier, appName: app?.localizedName)
+        let released = Date()
         Task { @MainActor in
             do {
                 let result = try await transcriber.transcribe(samples)
                 guard !result.text.isEmpty else { flash("Didn't catch that", error: false); return }
                 var text = await engine.process(result.text, category: category, appName: app?.localizedName)
+                Log.write("release to text: \(Int(Date().timeIntervalSince(released) * 1000)) ms")
                 if store.settings.autoApplyTransform, let id = store.settings.autoApplyTransformID,
                    let tf = store.transforms.first(where: { $0.id == id }) {
                     text = (try? await engine.transform(text, with: tf)) ?? text
                 }
                 insert(text, into: app)
+                editWatcher.watch(pasted: text)
                 let audioName = "\(UUID().uuidString).wav"
                 try? WAV.encode(samples).write(to: Paths.audio.appendingPathComponent(audioName))
                 store.history.insert(DictationEntry(rawText: result.text, text: text, appName: app?.localizedName,

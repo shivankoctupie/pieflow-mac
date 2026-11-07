@@ -568,3 +568,24 @@ enum MicMode {
     /// Opens the Control Center mic mode picker. Only meaningful while PieFlow has the microphone open.
     static func showPicker() { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }
 }
+
+
+enum AAC {
+    /// 16 kHz mono AAC in an m4a container, about a tenth of the WAV size, so uploads stop being the
+    /// slow part of a dictation. Returns nil if the encoder is unavailable; callers fall back to WAV.
+    static func encode(_ samples: [Float]) -> Data? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
+              let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(samples.count)) else { return nil }
+        buf.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16_000,
+                                                                   AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000],
+                                       commonFormat: .pcmFormatFloat32, interleaved: false)
+            try file.write(from: buf)
+        } catch { Log.write("aac encode failed: \(error.localizedDescription)"); return nil }
+        return try? Data(contentsOf: url)
+    }
+}

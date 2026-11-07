@@ -88,21 +88,49 @@ final class Transcriber {
     var vocabulary: [String] { store.dictionary.map(\.word).filter { !$0.isEmpty } }
 
     /// Tries providers in the user's order, falling back on any failure.
+    /// Opens (or refreshes) the HTTPS connection to the first cloud provider so the transcription
+    /// request at key release does not pay for DNS plus TLS. Called on every key press.
+    private var lastWarm = Date.distantPast
+    func warmConnection() {
+        guard Date().timeIntervalSince(lastWarm) > 15 else { return }
+        lastWarm = Date()
+        let url: URL
+        if !store.keys.groq.isEmpty, store.settings.providerOrder.first(where: isAvailable) == .groq {
+            url = URL(string: "https://api.groq.com/openai/v1/models")!
+        } else if !store.keys.xai.isEmpty, store.settings.providerOrder.first(where: isAvailable) == .grok {
+            url = URL(string: "https://api.x.ai/v1/models")!
+        } else { return }
+        var req = URLRequest(url: url, timeoutInterval: 5)
+        req.httpMethod = "HEAD"
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    /// Audio for upload: AAC when the encoder works, WAV otherwise.
+    struct Upload { let data: Data; let filename: String; let mime: String }
+    static func upload(for samples: [Float]) -> Upload {
+        if let aac = AAC.encode(samples) { return Upload(data: aac, filename: "audio.m4a", mime: "audio/mp4") }
+        return Upload(data: WAV.encode(samples), filename: "audio.wav", mime: "audio/wav")
+    }
+
     func transcribe(_ samples: [Float], timeout: TimeInterval? = nil, only: STTProvider? = nil) async throws -> TranscriptionResult {
         let order = only.map { [$0] } ?? store.settings.providerOrder
-        let wav = WAV.encode(samples)
+        let t0 = Date()
+        let up = Self.upload(for: samples)
+        let wav = (up.mime == "audio/wav") ? up.data : Data()
+        let encodeMs = Int(Date().timeIntervalSince(t0) * 1000)
         let seconds = Double(samples.count) / MicRecorder.sampleRate
         var errors: [String] = []
         for p in order where isAvailable(p) {
             do {
                 let t = timeout ?? (8 + seconds * 0.5)
+                let t1 = Date()
                 let r: TranscriptionResult
                 switch p {
-                case .grok: r = try await grok(wav, timeout: t)
-                case .groq: r = try await groq(wav, timeout: t)
-                case .local: r = try await local(wav)
+                case .grok: r = try await grok(up, timeout: t)
+                case .groq: r = try await groq(up, timeout: t)
+                case .local: r = try await local(wav.isEmpty ? WAV.encode(samples) : wav)
                 }
-                Log.write("stt ok via \(p.rawValue) (\(String(format: "%.1f", seconds))s audio)")
+                Log.write("stt ok via \(p.rawValue) (\(String(format: "%.1f", seconds))s audio, \(up.data.count / 1024) KB \(up.filename.suffix(3)), encode \(encodeMs) ms, request \(Int(Date().timeIntervalSince(t1) * 1000)) ms)")
                 return TranscriptionResult(text: Self.clean(r.text), segments: r.segments, engine: r.engine)
             } catch {
                 Log.write("stt \(p.rawValue) failed: \(error.localizedDescription)")
@@ -130,9 +158,9 @@ final class Transcriber {
 
     // MARK: Grok (xAI)
 
-    private func grok(_ wav: Data, timeout: TimeInterval) async throws -> TranscriptionResult {
+    private func grok(_ up: Upload, timeout: TimeInterval) async throws -> TranscriptionResult {
         var mp = Multipart()
-        mp.file("file", filename: "audio.wav", mime: "audio/wav", data: wav)
+        mp.file("file", filename: up.filename, mime: up.mime, data: up.data)
         if let lang = languageCode { mp.field("language", lang); mp.field("format", "true") }
         for term in vocabulary.prefix(100) { mp.field("keyterm", String(term.prefix(50))) }
         var req = URLRequest(url: URL(string: "https://api.x.ai/v1/stt")!, timeoutInterval: timeout)
@@ -155,9 +183,9 @@ final class Transcriber {
 
     // MARK: Groq
 
-    private func groq(_ wav: Data, timeout: TimeInterval) async throws -> TranscriptionResult {
+    private func groq(_ up: Upload, timeout: TimeInterval) async throws -> TranscriptionResult {
         var mp = Multipart()
-        mp.file("file", filename: "audio.wav", mime: "audio/wav", data: wav)
+        mp.file("file", filename: up.filename, mime: up.mime, data: up.data)
         mp.field("model", "whisper-large-v3-turbo")
         mp.field("response_format", "verbose_json")
         mp.field("temperature", "0")
@@ -243,6 +271,11 @@ enum Shell {
                 let p = Process()
                 p.executableURL = exe
                 p.arguments = args
+                var env = ProcessInfo.processInfo.environment
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                env["HOME"] = env["HOME"] ?? home
+                env["PATH"] = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+                p.environment = env
                 let out = Pipe(), err = Pipe()
                 p.standardOutput = out; p.standardError = err
                 let inPipe = Pipe()

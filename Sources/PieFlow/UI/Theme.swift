@@ -315,3 +315,45 @@ struct KeyField: View {
     }
 }
 
+
+
+/// Small confirmation at the bottom of the main window ("Copied", "Saved"), so every button answers.
+final class Toast: ObservableObject {
+    static let shared = Toast()
+    @Published var message: String?
+    private var work: DispatchWorkItem?
+    func show(_ text: String) {
+        message = text
+        work?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.message = nil }
+        work = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: w)
+    }
+    static func copied(_ text: String, label: String = "Copied") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        shared.show(label)
+    }
+}
+
+struct ToastView: View {
+    @ObservedObject var toast = Toast.shared
+    var body: some View {
+        VStack {
+            Spacer()
+            if let m = toast.message {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                    Text(m).font(.sans(13.5, .medium))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(Capsule().fill(Theme.ink))
+                .padding(.bottom, 28)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: toast.message)
+        .allowsHitTesting(false)
+    }
+}

@@ -13,7 +13,15 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var samples: [Float] = []
     var onError: ((String) -> Void)?
 
+    private var wantsRunning = false
+    private var restarting = false
+
     func start() async throws {
+        wantsRunning = true
+        try await open()
+    }
+
+    private func open() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else { throw PieError("No display found for audio capture") }
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -33,16 +41,37 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stop() async -> [Float] {
+        wantsRunning = false
         if let stream { try? await stream.stopCapture() }
         stream = nil
         return snapshot()
+    }
+
+    /// The stream dies when the display goes to sleep or the lid closes. Keep trying to reopen it for
+    /// as long as the meeting runs; audio in the gap is lost, everything after is captured again.
+    private func scheduleRestart() {
+        guard wantsRunning, !restarting else { return }
+        restarting = true
+        Task {
+            var attempt = 0
+            while wantsRunning, attempt < 120 {
+                attempt += 1
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard wantsRunning else { break }
+                do { try await open(); Log.write("system audio restarted after \(attempt) attempt(s)"); break }
+                catch { if attempt % 6 == 1 { Log.write("system audio restart failed: \(error.localizedDescription)") } }
+            }
+            restarting = false
+        }
     }
 
     func snapshot() -> [Float] { lock.lock(); defer { lock.unlock() }; return samples }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Log.write("system audio stopped: \(error.localizedDescription)")
+        self.stream = nil
         onError?(error.localizedDescription)
+        scheduleRestart()
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -237,8 +266,8 @@ final class Notetaker: ObservableObject {
         Use plain, direct English. Do not invent facts that are not in the transcript. Never use em dashes or en dashes.
         """
         do {
-            let transcript = String(m.transcriptText.prefix(120_000))
-            var out = try await llm.complete(system: system, user: transcript, timeout: 120, allowCLI: true, maxTokens: 3000)
+            let transcript = String(m.transcriptText.prefix(400_000))
+            var out = try await summarizeText(transcript, system: system)
             var title = m.title
             if let first = out.components(separatedBy: "\n").first, first.lowercased().hasPrefix("title:") {
                 title = first.dropFirst(6).trimmingCharacters(in: .whitespaces)
@@ -251,6 +280,39 @@ final class Notetaker: ObservableObject {
             update(id) { $0.status = .ready; $0.errorMessage = "Summary unavailable: \(error.localizedDescription)" }
             statusLine = ""
         }
+    }
+
+    /// Groq's free tier allows about 8,000 tokens per minute, so a long transcript is summarised in
+    /// pieces (each with its own notes), then the notes are merged. The local Claude CLI has no such
+    /// limit and gets the whole transcript when it is available.
+    private func summarizeText(_ transcript: String, system: String) async throws -> String {
+        let pieceChars = 9_000
+        if transcript.count <= pieceChars {
+            return try await llm.complete(system: system, user: transcript, timeout: 120, allowCLI: true, maxTokens: 3000)
+        }
+        if LLM.claudeCLI != nil, let out = try? await llm.completeWithCLI(system: system, user: transcript) { return out }
+        var pieces: [String] = []
+        var cur = ""
+        for line in transcript.components(separatedBy: "\n") {
+            if cur.count + line.count > pieceChars { pieces.append(cur); cur = "" }
+            cur += line + "\n"
+        }
+        if !cur.isEmpty { pieces.append(cur) }
+        let pieceSystem = "You take notes on one part of a longer meeting transcript. \"You\" is the person recording, \"Others\" are remote participants. Write 4 to 8 bullet points covering decisions, facts, numbers and tasks mentioned in this part, with owners when stated. Plain English, no preamble. Never use em dashes or en dashes."
+        var notes: [String] = []
+        let total = pieces.count
+        for (i, p) in pieces.enumerated() {
+            await MainActor.run { statusLine = "Writing summary, part \(i + 1) of \(total)" }
+            if i > 0, i % 3 == 0 { try? await Task.sleep(nanoseconds: 45_000_000_000) }   // stay under the per minute limit
+            do { notes.append(try await llm.complete(system: pieceSystem, user: p, timeout: 120, allowCLI: true, maxTokens: 700)) }
+            catch {
+                Log.write("summary part \(i + 1) failed: \(error.localizedDescription), waiting and retrying once")
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                notes.append(try await llm.complete(system: pieceSystem, user: p, timeout: 120, allowCLI: true, maxTokens: 700))
+            }
+        }
+        let merged = notes.enumerated().map { "Part \($0.offset + 1):\n\($0.element)" }.joined(separator: "\n\n")
+        return try await llm.complete(system: system + "\nYou are given notes from each part of the meeting instead of the raw transcript.", user: merged, timeout: 120, allowCLI: true, maxTokens: 3000)
     }
 
     /// Re-transcribes a meeting from its saved audio files.

@@ -162,7 +162,9 @@ struct MeetingRow: View {
             switch meeting.status {
             case .processing: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Processing").font(.sans(13)).foregroundStyle(Theme.ink2) }
             case .failed: Text("Failed").font(.sans(13)).foregroundStyle(Theme.red)
-            default: Image(systemName: "chevron.right").foregroundStyle(Theme.ink3)
+            default:
+                if meeting.summary.isEmpty && !meeting.segments.isEmpty { Text("No summary yet").font(.sans(13)).foregroundStyle(Theme.ink3) }
+                Image(systemName: "chevron.right").foregroundStyle(Theme.ink3)
             }
         }
         .padding(.vertical, 14).padding(.horizontal, 10)
@@ -196,10 +198,12 @@ struct MeetingDetail: View {
                         Text("\(MeetingRow.fmt.string(from: m.started))  ·  \(Meeting.clock(m.durationSec))  ·  \(m.segments.count) segments")
                             .font(.sans(13.5)).foregroundStyle(Theme.ink3)
                         Spacer()
-                        Button("Copy notes") { copy(m) }.buttonStyle(GhostButton())
+                        Button("Copy summary") { Toast.copied(m.summary.isEmpty ? "(no summary yet)" : m.summary, label: "Summary copied") }.buttonStyle(GhostButton())
+                        Button("Copy transcript") { Toast.copied(m.transcriptText, label: "Transcript copied") }.buttonStyle(GhostButton())
                         Button("Export") { export(m) }.buttonStyle(GhostButton())
                         Menu {
-                            Button("Regenerate summary") { Task { await notetaker.summarize(id) } }
+                            Button("Copy everything (notes and transcript)") { Toast.copied(markdown(m), label: "Notes and transcript copied") }
+                            Button("Regenerate summary") { Toast.shared.show("Rewriting summary"); Task { await notetaker.summarize(id) } }
                             Button("Re-transcribe from audio") { Task { await notetaker.reprocess(id) } }
                             if let f = m.audioFolder {
                                 Button("Show audio in Finder") { NSWorkspace.shared.open(Paths.meetings.appendingPathComponent(f)) }
@@ -247,16 +251,14 @@ struct MeetingDetail: View {
         "# \(m.title)\n\n\(MeetingRow.fmt.string(from: m.started))\n\n\(m.summary)\n\n## Transcript\n\n\(m.transcriptText)\n"
     }
 
-    private func copy(_ m: Meeting) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(markdown(m), forType: .string)
-    }
-
     private func export(_ m: Meeting) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = m.title.replacingOccurrences(of: "/", with: "-") + ".md"
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        if panel.runModal() == .OK, let url = panel.url { try? markdown(m).write(to: url, atomically: true, encoding: .utf8) }
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try markdown(m).write(to: url, atomically: true, encoding: .utf8); Toast.shared.show("Exported to \(url.lastPathComponent)") }
+            catch { Toast.shared.show("Export failed") }
+        }
     }
 
     private func delete(_ m: Meeting) {
@@ -746,7 +748,7 @@ struct DictionaryEditor: View {
         } onSave: {
             word.word = word.word.trimmingCharacters(in: .whitespaces)
             word.misheard = misheard.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            save(word); dismiss()
+            save(word); Toast.shared.show("Saved"); dismiss()
         }
     }
 }
@@ -850,7 +852,7 @@ struct SnippetEditor: View {
             TextEditor(text: $snippet.expansion).font(.sans(14)).scrollContentBackground(.hidden).padding(8)
                 .frame(height: 140).background(RoundedRectangle(cornerRadius: 9).fill(Color.white))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line))
-        } onSave: { save(snippet); dismiss() }
+        } onSave: { save(snippet); Toast.shared.show("Saved"); dismiss() }
     }
 }
 
@@ -966,7 +968,7 @@ struct TransformsPage: View {
                 HStack {
                     Text("My Transforms").font(.serif(34))
                     Spacer()
-                    Button { store.transforms = Transform.defaults } label: {
+                    Button { store.transforms = Transform.defaults; Toast.shared.show("Transforms reset") } label: {
                         HStack(spacing: 6) { Image(systemName: "arrow.counterclockwise"); Text("Reset to defaults") }.font(.sans(15)).foregroundStyle(Theme.ink)
                     }.buttonStyle(.plain)
                     Button("Create New") { editing = Transform(name: "", summary: "", prompt: "", hotkeyDigit: nextDigit) }.buttonStyle(PrimaryButton())
@@ -1040,7 +1042,7 @@ struct TransformEditor: View {
                 ThemedPicker(selection: $tf.hotkeyDigit,
                              options: [(Int?.none, "None")] + (1...9).map { (Int?.some($0), "⌥ \($0)") }, width: 120)
             }.padding(.top, 6)
-        } onSave: { save(tf); dismiss() }
+        } onSave: { save(tf); Toast.shared.show("Saved"); dismiss() }
     }
 }
 
@@ -1159,9 +1161,7 @@ struct NoteEditor: View {
                 Menu("Transform") {
                     ForEach(store.transforms) { t in Button(t.name) { run(t) } }
                 }.menuStyle(.borderlessButton).frame(width: 100)
-                IconButton(symbol: "doc.on.doc", help: "Copy") {
-                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(store.notes[index].body, forType: .string)
-                }
+                IconButton(symbol: "doc.on.doc", help: "Copy") { Toast.copied(store.notes[index].body, label: "Note copied") }
                 IconButton(symbol: "trash", help: "Delete") {
                     let id = store.notes[index].id
                     close()
@@ -1212,7 +1212,8 @@ struct NoteEditor: View {
         busy = true
         Task { @MainActor in
             defer { busy = false }
-            if let out = try? await llmBox.engine.transform(body, with: t) { store.notes[index].body = out; store.notes[index].updated = Date() }
+            if let out = try? await llmBox.engine.transform(body, with: t) { store.notes[index].body = out; store.notes[index].updated = Date(); Toast.shared.show("\(t.name) applied") }
+            else { Toast.shared.show("\(t.name) failed") }
         }
     }
 }
@@ -1255,7 +1256,7 @@ struct NoteImageThumb: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
                     .onTapGesture { NSWorkspace.shared.open(NoteImages.url(name)) }
                     .contextMenu {
-                        Button("Copy image") { NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([img]) }
+                        Button("Copy image") { NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([img]); Toast.shared.show("Image copied") }
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([NoteImages.url(name)]) }
                         Button("Remove", role: .destructive, action: remove)
                     }

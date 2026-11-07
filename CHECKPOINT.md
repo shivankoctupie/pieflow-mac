@@ -1,6 +1,6 @@
 # Checkpoint
 
-Phase: 1.0.3 shipped (2026-10-13).
+Phase: 1.0.6 shipped (2026-11-07). Tests: --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test.
 
 Done and verified
 - Bluetooth earbuds: automatic policy captures the built in mic via AVCaptureSession (48,122 samples / 3 s, zero leading silence). Pinned earbud mic also live via capture session.

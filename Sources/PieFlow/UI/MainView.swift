@@ -62,6 +62,7 @@ struct MainView: View {
         .padding(.top, 44)
         .background(Theme.window)
         .overlay(alignment: .top) { TopBar() }
+        .overlay { ToastView() }
         .sheet(isPresented: $router.showSettings) { SettingsView().environmentObject(store).environmentObject(router) }
         .sheet(isPresented: $router.showHelp) { HelpView() }
         .animation(.easeOut(duration: 0.2), value: router.sidebarCollapsed)
@@ -433,7 +434,7 @@ struct HistoryRow: View {
                     }
                 }
                 IconButton(symbol: copied ? "checkmark" : "doc.on.doc", help: "Copy") {
-                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.text, forType: .string)
+                    Toast.copied(entry.text)
                     copied = true; DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
                 }
                 IconButton(symbol: entry.flagged ? "flag.fill" : "flag", help: "Flag") { mutate { $0.flagged.toggle() } }
@@ -442,7 +443,7 @@ struct HistoryRow: View {
                     Menu("Retry transcription") {
                         ForEach(STTProvider.allCases) { p in Button(p.label) { retry(p) } }
                     }
-                    Button("Paste again") { Inserter.paste(entry.text) }
+                    Button("Paste again") { Inserter.paste(entry.text); Toast.shared.show("Pasted") }
                     Divider()
                     Button("Delete", role: .destructive) { delete() }
                 } label: {
@@ -477,12 +478,7 @@ struct HistoryRow: View {
         guard a.count == b.count else { return }
         let strip: (String) -> String = { $0.trimmingCharacters(in: .punctuationCharacters) }
         for (x, y) in zip(a, b) where strip(x).lowercased() != strip(y).lowercased() && !strip(y).isEmpty {
-            let word = strip(y), heard = strip(x)
-            if let i = store.dictionary.firstIndex(where: { $0.word.lowercased() == word.lowercased() }) {
-                if !store.dictionary[i].misheard.contains(heard) { store.dictionary[i].misheard.append(heard) }
-            } else {
-                store.dictionary.append(DictionaryWord(word: word, misheard: [heard]))
-            }
+            store.learn(heard: strip(x), corrected: strip(y))
         }
     }
 
