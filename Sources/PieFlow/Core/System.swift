@@ -64,7 +64,7 @@ enum Permissions {
         let path = Bundle.main.bundlePath
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; /usr/bin/open \"\(path)\""]
+        p.arguments = ["-c", "sleep 1; /usr/bin/open -n \"\(path)\""]
         try? p.run()
         Store.shared.flush()
         exit(0)

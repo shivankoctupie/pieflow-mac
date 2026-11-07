@@ -174,7 +174,7 @@ final class Updater: ObservableObject {
         store.flush()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; /usr/bin/open \"\(dest.path)\""]
+        p.arguments = ["-c", "sleep 1; /usr/bin/open -n \"\(dest.path)\""]
         try p.run()
         store.flush()
         exit(0)
