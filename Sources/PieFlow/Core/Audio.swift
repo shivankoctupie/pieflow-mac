@@ -258,9 +258,10 @@ final class MicRecorder {
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
             guard let self, self.isRunning, self.session === s else { return }
-            self.lock.lock(); let n = self.samples.count; self.lock.unlock()
-            guard n == 0 else { return }
-            Log.write("mic: \(device.name) delivered no audio in 1.5 s, falling back")
+            self.lock.lock(); let n = self.samples.count; let dead = n == 0 || self.samples.allSatisfy { $0 == 0 }; self.lock.unlock()
+            guard dead else { return }
+            Log.write("mic: \(device.name) delivered \(n == 0 ? "no audio" : "only silence") in 1.5 s, rebuilding the pipeline")
+            self.discardWarm()
             self.fallBack(isolation: false)
         }
     }
@@ -272,6 +273,7 @@ final class MicRecorder {
 
     /// Last resort when a device stays silent: the built in mic through the capture session, else the engine default.
     private func fallBack(isolation: Bool) {
+        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
         if let builtIn = AudioDevices.inputs().first(where: { $0.isBuiltIn }), builtIn.id != AudioDevices.defaultInput?.id || session == nil {
             do { try startCapture(device: builtIn); Log.write("mic: fallback to \(builtIn.name) via capture session"); return }
             catch { Log.write("mic: built in fallback failed: \(error.localizedDescription)") }
@@ -416,9 +418,10 @@ final class MicRecorder {
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak self] _ in
             guard let self, self.isRunning, self.engine === engine else { return }
-            self.lock.lock(); let n = self.samples.count; self.lock.unlock()
-            guard n == 0 else { return }
-            Log.write("mic: \(device?.name ?? "default device") delivered no audio in 1.2 s, falling back")
+            self.lock.lock(); let n = self.samples.count; let dead = n == 0 || self.samples.allSatisfy { $0 == 0 }; self.lock.unlock()
+            guard dead else { return }
+            Log.write("mic: \(device?.name ?? "default device") delivered \(n == 0 ? "no audio" : "only silence") in 1.2 s, rebuilding the pipeline")
+            self.discardWarm()
             self.fallBack(isolation: voiceIsolation)
         }
     }
