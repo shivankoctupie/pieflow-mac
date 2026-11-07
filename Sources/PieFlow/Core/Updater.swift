@@ -176,7 +176,8 @@ final class Updater: ObservableObject {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", "sleep 1; /usr/bin/open \"\(dest.path)\""]
         try p.run()
-        NSApp.terminate(nil)
+        store.flush()
+        exit(0)
     }
 
     private func download(_ url: URL, to dest: URL) async throws {

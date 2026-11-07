@@ -236,7 +236,7 @@ struct Settings: Codable {
     var providerOrder: [STTProvider] = [.grok, .groq, .local]
     var localModel = "base.en"
     var aiCleanup = true
-    var cleanupModelGroq = "openai/gpt-oss-120b"
+    var cleanupModelGroq = "qwen/qwen3.8-27b"
     var cleanupModelXAI = "grok-4-fast-non-reasoning"
     var launchAtLogin = false
     var showFlowBar = true
@@ -278,7 +278,7 @@ struct Settings: Codable {
         aiCleanup = v(.aiCleanup, d.aiCleanup)
         cleanupModelGroq = v(.cleanupModelGroq, d.cleanupModelGroq)
         // Groq retired its Llama chat models; move old installs to the current default.
-        if cleanupModelGroq.hasPrefix("llama-") { cleanupModelGroq = d.cleanupModelGroq }
+        if cleanupModelGroq.hasPrefix("llama-") || cleanupModelGroq == "openai/gpt-oss-120b" { cleanupModelGroq = d.cleanupModelGroq }
         cleanupModelXAI = v(.cleanupModelXAI, d.cleanupModelXAI)
         launchAtLogin = v(.launchAtLogin, d.launchAtLogin)
         showFlowBar = v(.showFlowBar, d.showFlowBar)

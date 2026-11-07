@@ -67,7 +67,7 @@ enum Permissions {
         p.arguments = ["-c", "sleep 1; /usr/bin/open \"\(path)\""]
         try? p.run()
         Store.shared.flush()
-        NSApp.terminate(nil)
+        exit(0)
     }
 
     static func openKeyboardSettings() {

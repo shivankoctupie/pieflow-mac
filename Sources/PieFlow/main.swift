@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        retireOtherInstances()
         Theme.registerFonts()
         Log.write("launch v\(AppInfo.version) build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         Log.write("permissions at launch: \(Permissions.summary)")
@@ -185,6 +186,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         meetingPrompt.close()
         guard store.settings.meetingAutoStop, notetaker.isRecording, notetaker.detectedApp == c.bundleID else { return }
         Task { @MainActor in await notetaker.stop() }
+    }
+
+    /// Two copies of PieFlow both listen to fn, both record and both paste: every dictation lands twice.
+    /// A fresh launch (after an update, or a double click) retires any other copy.
+    private func retireOtherInstances() {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "app.pieflow.mac")
+            .filter { $0.processIdentifier != me }
+        for app in others {
+            Log.write("retiring another PieFlow instance (pid \(app.processIdentifier), \(app.bundleURL?.path ?? "?"))")
+            if !app.terminate() { app.forceTerminate() }
+        }
+        if !others.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                for app in others where !app.isTerminated { app.forceTerminate() }
+            }
+        }
     }
 
     @objc func openSettings() { showMain(); router.showSettings = true }

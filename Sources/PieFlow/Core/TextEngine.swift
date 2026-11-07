@@ -40,7 +40,7 @@ final class LLM {
     /// Preferred cleanup models, best first. Providers retire models often (Groq dropped all Llama
     /// models in 2026), so when the configured one is gone we pick the first of these the key can use.
     static let preferred: [Provider: [String]] = [
-        .groq: ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"],
+        .groq: ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"],
         .xai: ["grok-4-fast-non-reasoning", "grok-4-1-fast-non-reasoning", "grok-3-mini", "grok-4-fast"],
     ]
 
