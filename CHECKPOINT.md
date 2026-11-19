@@ -1,6 +1,6 @@
 # Checkpoint
 
-Phase: 1.0.11 built, tested and installed on the dev Mac (2026-11-19), not committed and not released. Work is on branch fix/groq-wait-and-movable-bar. The last release is still 1.0.10 (main and tag v1.0.10 at a0ceabc). Exact next step: commit, merge to main, push, `gh release create v1.0.11` with dist/PieFlow-1.0.11.dmg and its .sha256 (rebuild first if any source changed), then verify the release live.
+Phase: 1.0.11 released (2026-11-19). main and tag v1.0.11 are at dbe617f; the GitHub release carries PieFlow-1.0.11.dmg and its .sha256, releases/latest returns v1.0.11, and the public download matches the checksum. The dev Mac runs this exact build.
 
 Tests: --selftest, --hedge-test, --bar-drag-test, --bar-test, --duck-test, --sys-meter with --duck-live or --vp-probe, --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test, --snapshot.
 
@@ -24,6 +24,8 @@ Open
 - How the Flow Bar motion feels is a by-eye check; pictures of each state come from `--bar-test <dir>`.
 - Machines still on 1.0.9 take the update through the in app updater; that path was not exercised for this release (the test Mac already ran 1.0.10).
 - Not confirmed by ear yet: music staying untouched around a dictation on the released build.
+- Machines on 1.0.10 or older take 1.0.11 through the in app updater; that path was not exercised for this release either.
+- Uploading the DMG can fail on a bad connection ("HTTP 408: Upload body timed out"). Release as a draft first (`gh release create --draft`, then `gh release upload`, then `gh release edit --draft=false --latest`), so a release never goes public without its DMG.
 - 1.0.11: the drag was proven with events sent to the panel, not with a real pointer on the installed app; that is a by-hand check.
 - 1.0.11: on a bad connection more text comes from the local Base model, which is less accurate than Groq. A larger local model would help; nobody has measured how fast Small or Large v3 Turbo answer on this Mac.
 - The network at the dev Mac lost 10 to 25% of packets to api.groq.com on 2026-11-19. A selftest that fails only on "stt groq" is that: run `ping -c 10 api.groq.com` before blaming the build.
