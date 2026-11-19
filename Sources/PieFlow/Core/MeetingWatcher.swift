@@ -152,6 +152,7 @@ final class MeetingPrompt {
         p.backgroundColor = NSColor(Theme.page)
         p.hasShadow = true
         p.isReleasedWhenClosed = false
+        p.canHide = false   // stays up when the app is hidden, like the Flow Bar
         p.contentView = NSHostingView(rootView: MeetingPromptView(appName: appName,
             start: { [weak self] in onStart(); self?.close() },
             dismiss: { [weak self] in self?.close() }))

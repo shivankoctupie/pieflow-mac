@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import CoreGraphics
+import CoreAudio
 import ServiceManagement
 
 enum Permissions {
@@ -254,6 +255,33 @@ enum Sounds {
 }
 
 enum SystemAudio {
+    /// Apple voice processing turns every other app down on the output device for as long as its audio
+    /// unit exists, standby included. CoreAudio exports the call it uses for that (AudioDeviceDuck) but
+    /// leaves it out of the headers, so it is looked up at run time: if a future macOS drops the symbol,
+    /// PieFlow still launches and simply cannot undo the ducking.
+    private typealias DuckFunction = @convention(c) (AudioDeviceID, Float32, UnsafePointer<AudioTimeStamp>?, Float32) -> OSStatus
+    private static let duck: DuckFunction? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "AudioDeviceDuck") else {
+            Log.write("audio: AudioDeviceDuck is not available on this macOS, other apps may get quieter while PieFlow listens")
+            return nil
+        }
+        return unsafeBitCast(symbol, to: DuckFunction.self)
+    }()
+
+    /// Sets how loud other apps play on the current output: 1 is full volume.
+    @discardableResult
+    static func setOtherAudioLevel(_ level: Float) -> Bool {
+        guard let duck, let out = AudioDevices.defaultOutput else { return false }
+        return duck(out.id, level, nil, 0.05) == noErr
+    }
+
+    /// Puts other apps back at full volume. Safe to call at any time.
+    static func restoreOtherAudio() {
+        // PIEFLOW_KEEP_DUCKING=1 leaves Apple's ducking alone, so --duck-test can show the old behaviour.
+        if ProcessInfo.processInfo.environment["PIEFLOW_KEEP_DUCKING"] == "1" { return }
+        setOtherAudioLevel(1)
+    }
+
     private static var wasMuted = false
     static func mute(_ on: Bool) {
         if on {

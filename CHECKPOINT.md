@@ -1,13 +1,18 @@
 # Checkpoint
 
-Phase: 1.0.6 shipped (2026-11-07). Tests: --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test.
+Phase: 1.0.10 built and verified locally on branch release/1.0.10 (2026-11-19). Not merged to main, no GitHub release yet.
 
-Done and verified
-- Bluetooth earbuds: automatic policy captures the built in mic via AVCaptureSession (48,122 samples / 3 s, zero leading silence). Pinned earbud mic also live via capture session.
-- Meeting detection: auto start after 4 s of mic use by a call app, auto stop 20 s after release (verified with a second instance holding the mic).
-- Instant start: standby mic pipeline, 80 to 95 ms to first audio, pill on key press.
-- Note images render; selectable text everywhere; updater verified 1.0.1 to 1.0.2 and 0.9.0 to 1.0.1 (fake version), real unfaked update pending the 1.0.3 release.
+Tests: --selftest, --bar-test, --duck-test, --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test, --snapshot.
+
+Done and verified in 1.0.10
+- Flow Bar stays on screen when the app is hidden and with no Dock icon (`--bar-test`: BAR TEST PASS).
+- Other apps keep their volume while PieFlow listens (`--duck-test`: 9.0 dB of ducking with the old behaviour, -0.5 dB with the fix).
+- Dock icon follows the window; dictation starts with no Dock icon (`--bar-test`).
+- Mic level no longer re-renders the window, saves encode off the main thread, history list is lazy.
+- New icon in Assets/AppIcon.icns (regenerate with scripts/make-icon.swift).
+- Packaged `--selftest`: SELFTEST OK.
 
 Open
-- Speaker path (AVAudioEngine + voice processing) after the process() rewrite: evidence from the format probe only (native tap on the VP node carries audio on all channels). Confirm from pieflow.log: a line `mic: engine ... isolation on` followed by `stt ok`. Or run `open -n -W build/PieFlow.app --args --aec-test` with Bluetooth off.
-- Image drop and paste go through NoteTextView; the pasteboard reader is covered by --drop-test, the live drag is a user-level check.
+- Login launch without a window is not tested (needs a logout). If the window still opens at login, the Apple event check in `launchedAtLogin` is the place to look.
+- How the Flow Bar motion feels is a by-eye check; pictures of each state come from `--bar-test <dir>`.
+- Next step to ship: merge release/1.0.10 into main, tag v1.0.10, `gh release create` with the DMG and its .sha256.

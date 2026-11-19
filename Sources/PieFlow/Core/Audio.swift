@@ -322,6 +322,7 @@ final class MicRecorder {
                 let e: AVAudioEngine
                 do { e = try buildEngine(voiceIsolation: c.isolate) } catch where c.isolate { e = try buildEngine(voiceIsolation: false) }
                 warm = Warm(key: k, backend: .engine(e, isolate: c.isolate))
+                if c.isolate { SystemAudio.restoreOtherAudio() }
             } else if let dev = c.device {
                 let (s, d) = try buildSession(device: dev)
                 warm = Warm(key: k, backend: .session(s, d, dev))
@@ -333,8 +334,25 @@ final class MicRecorder {
     }
 
     func discardWarm() {
-        if case .engine(let e, _)? = warm?.backend { e.inputNode.removeTap(onBus: 0) }
+        if case .engine(let e, let isolate)? = warm?.backend {
+            e.inputNode.removeTap(onBus: 0)
+            warm = nil
+            if isolate { SystemAudio.restoreOtherAudio() }
+        }
         warm = nil
+    }
+
+    /// True while a voice processing unit exists in this process, running or on standby.
+    var holdsVoiceProcessing: Bool {
+        if isRunning, engine != nil, voiceProcessingActive { return true }
+        if case .engine(_, let isolate)? = warm?.backend { return isolate }
+        return false
+    }
+
+    /// Voice processing lowers every other app for as long as its unit exists. This undoes that, and is
+    /// cheap enough to repeat, which covers a device switch or macOS applying the ducking again.
+    func keepOtherAudioFull() {
+        if holdsVoiceProcessing { SystemAudio.restoreOtherAudio() }
     }
 
     private func buildEngine(voiceIsolation: Bool) throws -> AVAudioEngine {
@@ -367,8 +385,15 @@ final class MicRecorder {
         self.engine = engine
         isRunning = true
         startedAt = Date()
+        if voiceIsolation { liftDucking() }
         armWatchdog(engine: engine, device: device, voiceIsolation: voiceIsolation)
         observeConfigChanges(engine)
+    }
+
+    /// Now, and once more after the unit has settled: starting it can apply the ducking a second time.
+    private func liftDucking() {
+        SystemAudio.restoreOtherAudio()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.keepOtherAudioFull() }
     }
 
     private func startEngine(device: AudioDevice?, voiceIsolation: Bool) throws {
@@ -379,7 +404,8 @@ final class MicRecorder {
             try input.setVoiceProcessingEnabled(true)
             input.isVoiceProcessingBypassed = false
             input.isVoiceProcessingAGCEnabled = false
-            // Keep other apps at full volume; we only want the cancellation, not the FaceTime style ducking.
+            // The gentlest ducking Apple offers still takes other apps down about 9 dB, so it is lifted
+            // again right after the unit starts (see SystemAudio.restoreOtherAudio).
             if #available(macOS 14.0, *) {
                 input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
             }
@@ -409,6 +435,7 @@ final class MicRecorder {
         self.engine = engine
         isRunning = true
         startedAt = Date()
+        if voiceIsolation { liftDucking() }
         armWatchdog(engine: engine, device: device, voiceIsolation: voiceIsolation)
         observeConfigChanges(engine)
     }
@@ -504,6 +531,7 @@ final class MicRecorder {
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
+            if voiceProcessingActive { SystemAudio.restoreOtherAudio() }
         }
         engine = nil
         isRunning = false

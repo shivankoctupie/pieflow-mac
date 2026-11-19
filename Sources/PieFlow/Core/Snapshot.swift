@@ -176,3 +176,80 @@ enum UpdateTest {
         }
     }
 }
+
+/// `PieFlow --bar-test [dir]`: the Flow Bar must stay on screen when the app is hidden and when its
+/// window is closed, the Dock icon must follow the window, and dictation must start without a Dock icon.
+/// With a directory, it also saves pictures of the pill in each state.
+enum BarTest {
+    /// Asks the window server, not AppKit, whether the bar is really on screen.
+    static func barOnScreen() -> Bool {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        return list.contains { ($0[kCGWindowOwnerPID as String] as? Int32) == me && ($0[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.statusWindow)) }
+    }
+
+    static func run(_ app: AppDelegate, dir: URL?) {
+        var ok = true
+        func check(_ name: String, _ pass: Bool) {
+            let line = "bar-test \(pass ? "PASS" : "FAIL") \(name)"
+            print(line); Log.write(line); ok = ok && pass
+        }
+        func after(_ seconds: Double, _ work: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work) }
+        func shot(_ name: String) {
+            guard let dir, let frame = app.flowBar.frame, let screen = NSScreen.screens.first,
+                  let full = CGDisplayCreateImage(CGMainDisplayID()) else { return }
+            let scale = CGFloat(full.width) / screen.frame.width
+            let rect = CGRect(x: frame.minX * scale, y: (screen.frame.height - frame.maxY) * scale, width: frame.width * scale, height: frame.height * scale)
+            guard let crop = full.cropping(to: rect) else { return }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? NSBitmapImageRep(cgImage: crop).representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("\(name).png"))
+        }
+        app.showMain()
+        after(1.2) {
+            check("window open: PieFlow is in the Dock", NSApp.activationPolicy() == .regular)
+            check("Flow Bar on screen", barOnScreen())
+            NSApp.hide(nil)
+            after(1.0) {
+                check("app is hidden", NSApp.isHidden)
+                check("Flow Bar still on screen while the app is hidden", barOnScreen())
+                NSApp.unhide(nil)
+                after(0.6) {
+                    app.window?.performClose(nil)
+                    after(0.8) {
+                        check("window closed: PieFlow left the Dock", NSApp.activationPolicy() == .accessory)
+                        check("Flow Bar on screen with no Dock icon", barOnScreen())
+                        shot("pill-idle")
+                        app.dictation.begin(handsFree: false)
+                        after(1.0) {
+                            check("dictation starts with no Dock icon, pill on screen", app.dictation.isRecording && barOnScreen())
+                            shot("pill-hold")
+                            app.dictation.level.pinned = 0.6
+                            after(0.5) {
+                              shot("pill-speaking")
+                              app.dictation.level.pinned = nil
+                              app.dictation.cancel(silent: true)
+                              after(0.5) {
+                                app.dictation.begin(handsFree: true)
+                                after(1.0) {
+                                    shot("pill-handsfree")
+                                    app.dictation.cancel(silent: false)
+                                    after(0.5) {
+                                        shot("pill-message")
+                                        app.showMain()
+                                        after(0.8) {
+                                            check("window reopened: back in the Dock", NSApp.activationPolicy() == .regular)
+                                            let verdict = ok ? "BAR TEST PASS" : "BAR TEST FAIL"
+                                            print(verdict); Log.write("bar-test " + verdict)
+                                            after(0.3) { exit(ok ? 0 : 1) }
+                                        }
+                                    }
+                                }
+                              }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

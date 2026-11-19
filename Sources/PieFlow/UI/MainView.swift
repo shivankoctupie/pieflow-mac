@@ -118,8 +118,8 @@ struct LogoMark: View {
     var size: CGFloat = 22
     var body: some View {
         HStack(alignment: .center, spacing: size * 0.09) {
-            ForEach([0.55, 0.9, 0.62, 1.0, 0.7], id: \.self) { h in
-                RoundedRectangle(cornerRadius: size * 0.05).fill(Theme.ink).frame(width: size * 0.11, height: size * h)
+            ForEach(Array([0.42, 0.74, 0.52, 1.0, 0.6].enumerated()), id: \.offset) { i, h in
+                Capsule().fill(i == 3 ? Theme.accent : Theme.ink).frame(width: size * 0.13, height: size * h)
             }
         }.frame(height: size)
     }
@@ -317,7 +317,9 @@ struct HomePage: View {
         if store.history.isEmpty {
             EmptyHistory()
         } else {
-            VStack(alignment: .leading, spacing: 14) {
+            // Lazy on both levels: with a few hundred dictations, building every row (each with its own
+            // menu and buttons) up front made the window slow to open and slow to react.
+            LazyVStack(alignment: .leading, spacing: 14) {
                 if searching {
                     HStack {
                         TextField("Search your dictations", text: $search).pieField()
@@ -330,7 +332,7 @@ struct HomePage: View {
                         Spacer()
                         if idx == 0 && !searching { IconButton(symbol: "magnifyingglass", help: "Search") { searching = true } }
                     }
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(group.1.enumerated()), id: \.element.id) { i, e in
                             HistoryRow(entry: e)
                             if i < group.1.count - 1 { Rectangle().fill(Theme.line).frame(height: 1) }

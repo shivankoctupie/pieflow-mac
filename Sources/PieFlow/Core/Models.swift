@@ -240,7 +240,7 @@ struct Settings: Codable {
     var cleanupModelXAI = "grok-4-fast-non-reasoning"
     var launchAtLogin = false
     var showFlowBar = true
-    var showInDock = true
+    var keepInDock = false
     var sounds = true
     var muteWhileDictating = false
     var voiceIsolation = true
@@ -282,7 +282,7 @@ struct Settings: Codable {
         cleanupModelXAI = v(.cleanupModelXAI, d.cleanupModelXAI)
         launchAtLogin = v(.launchAtLogin, d.launchAtLogin)
         showFlowBar = v(.showFlowBar, d.showFlowBar)
-        showInDock = v(.showInDock, d.showInDock)
+        keepInDock = v(.keepInDock, d.keepInDock)
         sounds = v(.sounds, d.sounds)
         muteWhileDictating = v(.muteWhileDictating, d.muteWhileDictating)
         voiceIsolation = v(.voiceIsolation, d.voiceIsolation)

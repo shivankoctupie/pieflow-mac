@@ -26,7 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Log.write("launch v\(AppInfo.version) build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         Log.write("permissions at launch: \(Permissions.summary)")
         _ = PermissionState.shared
-        NSApp.setActivationPolicy(store.settings.showInDock ? .regular : .accessory)
+        // PieFlow is a menu bar app: it takes a Dock icon only while one of its windows is open.
+        NSApp.setActivationPolicy(store.settings.keepInDock ? .regular : .accessory)
         buildMenu()
         setupStatusItem()
         flowBar.show()
@@ -41,8 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for id in store.needsSummary { Task { @MainActor in await notetaker.summarize(id) } }
         store.needsSummary = []
         NotificationCenter.default.addObserver(forName: .showOnboarding, object: nil, queue: .main) { [weak self] _ in self?.showOnboarding() }
+        NotificationCenter.default.addObserver(forName: .dockPolicyChanged, object: nil, queue: .main) { [weak self] _ in self?.updateDockPolicy() }
         if CommandLine.arguments.contains("--update-test") {
             UpdateTest.run(self)
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--bar-test") {
+            let dir = i + 1 < CommandLine.arguments.count ? URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true) : nil
+            BarTest.run(self, dir: dir)
             return
         }
         if CommandLine.arguments.contains("--focus-test") {
@@ -56,7 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Snapshot.run(self, dir: dir)
             return
         }
-        if store.settings.onboarded { showMain() } else { showOnboarding() }
+        if !store.settings.onboarded { showOnboarding() }
+        else if launchedAtLogin { Log.write("launched at login: staying in the menu bar, no window") }
+        else { showMain() }
         // Keep retrying the hotkey listener until permissions arrive.
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self, !self.dictation.hotkeys.isListening, Permissions.accessibility else { return }
@@ -70,6 +79,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// macOS marks the launch event when the login item list started the app. Nobody asked for a window
+    /// then, so PieFlow starts straight into the menu bar.
+    private var launchedAtLogin: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventID == kAEOpenApplication else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }
+
+    // MARK: Dock
+
+    /// In the Dock while a window is open (or always, if the user asked for that), menu bar only otherwise.
+    /// Dictation, the Flow Bar and Notetaker do not depend on it either way.
+    func updateDockPolicy() {
+        let windowOpen = [window, onboarding].contains { $0?.isVisible == true }
+        let wanted: NSApplication.ActivationPolicy = (store.settings.keepInDock || windowOpen) ? .regular : .accessory
+        guard NSApp.activationPolicy() != wanted else { return }
+        NSApp.setActivationPolicy(wanted)
+        if wanted == .regular { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // The window still counts as visible inside this callback; decide once it is gone.
+        DispatchQueue.main.async { [weak self] in self?.updateDockPolicy() }
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         store.flush()
@@ -95,8 +128,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.center()
             w.setFrameAutosaveName("PieFlowMain")
             w.appearance = NSAppearance(named: .aqua)
+            w.delegate = self
             window = w
         }
+        NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -116,8 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.showMain()
             }))
             w.center()
+            w.delegate = self
             onboarding = w
         }
+        NSApp.setActivationPolicy(.regular)
         onboarding?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -126,12 +163,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "PieFlow")
+        item.button?.image = Self.menuBarMark
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
         statusItem = item
     }
+
+    /// The PieFlow mark (five bars) as a template image, so the menu bar tints it for light and dark.
+    static let menuBarMark: NSImage = {
+        let heights: [CGFloat] = [0.42, 0.74, 0.52, 1.0, 0.6]
+        let barWidth: CGFloat = 2, gap: CGFloat = 1.5, tall: CGFloat = 14
+        let width = CGFloat(heights.count) * barWidth + CGFloat(heights.count - 1) * gap
+        let image = NSImage(size: NSSize(width: width, height: 18), flipped: false) { _ in
+            NSColor.black.setFill()
+            for (i, h) in heights.enumerated() {
+                let barHeight = tall * h
+                let rect = NSRect(x: CGFloat(i) * (barWidth + gap), y: (18 - barHeight) / 2, width: barWidth, height: barHeight)
+                NSBezierPath(roundedRect: rect, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "PieFlow"
+        return image
+    }()
 
     private func buildMenu() {
         let main = NSMenu()
@@ -254,6 +310,9 @@ if CommandLine.arguments.contains("--drop-test") {
 }
 if CommandLine.arguments.contains("--mic-test") {
     exit(SelfTest.micTest())
+}
+if CommandLine.arguments.contains("--duck-test") {
+    exit(SelfTest.duckTest())
 }
 if CommandLine.arguments.contains("--aec-probe") {
     exit(SelfTest.aecProbe())

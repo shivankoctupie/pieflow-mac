@@ -1,6 +1,20 @@
 import AppKit
 import Combine
 
+/// The live microphone level, read by the Flow Bar once per frame. It is deliberately not @Published:
+/// it changes about 25 times a second, and as published state it re-rendered every view that observes
+/// the controller (the whole main window, every history row) for as long as a dictation lasted.
+final class MicLevel {
+    private let lock = NSLock()
+    private var stored: Float = 0
+    /// Tests pin a level so the waveform can be photographed without anyone talking.
+    var pinned: Float?
+    var value: Float {
+        get { lock.lock(); defer { lock.unlock() }; return pinned ?? stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}
+
 final class DictationController: ObservableObject {
     enum Phase: Equatable {
         case idle
@@ -11,7 +25,7 @@ final class DictationController: ObservableObject {
     }
 
     @Published var phase: Phase = .idle
-    @Published var level: Float = 0
+    let level = MicLevel()
     @Published var lastText: String = ""
 
     let store: Store
@@ -30,7 +44,7 @@ final class DictationController: ObservableObject {
         self.store = store
         self.transcriber = transcriber
         self.engine = engine
-        mic.onLevel = { [weak self] l in DispatchQueue.main.async { self?.level = self.map { $0.level * 0.4 + l * 0.6 } ?? l } }
+        mic.onLevel = { [level] l in level.value = l }
         hotkeys.onEvent = { [weak self] e in self?.handle(e) }
         editWatcher.onLearned = { [weak self] heard, corrected in
             guard let self else { return }
@@ -45,6 +59,7 @@ final class DictationController: ObservableObject {
         prewarmTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
             guard let self, !self.mic.isRunning else { return }
             self.mic.prewarm(deviceUID: self.store.settings.microphoneUID, voiceIsolation: self.store.settings.voiceIsolation)
+            self.mic.keepOtherAudioFull()
         }
         prewarmTimer?.fire()
     }
@@ -125,7 +140,7 @@ final class DictationController: ObservableObject {
         mic.stop()
         maxTimer?.invalidate()
         if store.settings.muteWhileDictating { SystemAudio.mute(false) }
-        level = 0
+        level.value = 0
         if silent { setPhase(.idle) } else { flash("Cancelled", error: false) }
     }
 
@@ -136,7 +151,7 @@ final class DictationController: ObservableObject {
         let duration = Date().timeIntervalSince(startedAt)
         if store.settings.muteWhileDictating { SystemAudio.mute(false) }
         Sounds.stop()
-        level = 0
+        level.value = 0
         guard samples.count > Int(MicRecorder.sampleRate * 0.3), WAV.rms(samples) > 0.002 else {
             Log.write(String(format: "dictation dropped: %.1fs held, %d samples, rms %.4f (%@)", duration, samples.count, WAV.rms(samples), mic.choice?.reason ?? "?"))
             flash("Didn't catch that", error: false); return

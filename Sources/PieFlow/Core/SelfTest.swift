@@ -61,6 +61,59 @@ enum SelfTest {
         return ok ? 0 : 1
     }
 
+    /// `PieFlow --duck-test`: other apps must keep their volume while PieFlow listens. Plays quiet test
+    /// tones from another process, then walks the real microphone path (standby, recording, stop) and
+    /// checks at each step whether there is anything left to lift. The microphone itself changes character
+    /// while voice processing is on, so steps are compared with their neighbour, not with the first reading.
+    static func duckTest() -> Int32 {
+        guard Permissions.microphone else { print("FAIL microphone permission not granted to this process"); return 1 }
+        guard AudioDevices.outputIsBuiltInSpeakers else { print("SKIP output is not the built in speakers, voice processing stays off there"); return 0 }
+        guard let meter = ToneMeter() else { print("FAIL could not open the built in microphone"); return 1 }
+        let tone = ToneMeter.playTones(seconds: 40)
+        defer { tone?.terminate() }
+        // The main thread sleeps instead of running its loop: when the loop services the device change
+        // that voice processing causes, the meter's own capture session stops delivering until it ends.
+        Thread.sleep(forTimeInterval: 1.5)
+        let mic = MicRecorder()
+        var rows: [(String, [Double])] = []
+        func phase(_ name: String, _ action: () -> Void) {
+            action()
+            Thread.sleep(forTimeInterval: 0.9)
+            let t0 = Date()
+            Thread.sleep(forTimeInterval: 1.9)
+            rows.append((name, meter.mean(from: t0, to: Date()).tones))
+        }
+        phase("before") {}
+        phase("standby") { mic.prewarm(deviceUID: nil, voiceIsolation: true) }
+        phase("standby, lifted by hand") { SystemAudio.setOtherAudioLevel(1) }
+        phase("recording") { do { try mic.start(deviceUID: nil, voiceIsolation: true) } catch { print("mic start: \(error.localizedDescription)") } }
+        phase("recording, lifted by hand") { SystemAudio.setOtherAudioLevel(1) }
+        phase("stopped") { mic.stop(); mic.discardWarm() }
+        /// How much louder step `a` is than step `b`, averaged over the tones.
+        func gain(_ a: Int, over b: Int) -> Double {
+            let d = rows[a].1.indices.map { 20 * log10(max(rows[a].1[$0], 1e-12) / max(rows[b].1[$0], 1e-12)) }
+            return d.reduce(0, +) / Double(d.count)
+        }
+        // If PieFlow already keeps other apps at full volume, lifting them by hand changes nothing.
+        // When they are ducked, the same call brings them up by about 9 dB.
+        let standby = gain(2, over: 1), recording = gain(4, over: 3)
+        let after = 20 * log10(max(rows[5].1[0], 1e-12) / max(rows[0].1[0], 1e-12))
+        let lines = [
+            String(format: "standby: lifting by hand gains %+.1f dB (pass under 5, about 9 when ducked)", standby),
+            String(format: "recording: lifting by hand gains %+.1f dB (pass under 5)", recording),
+            String(format: "after stop the 440 Hz tone is %+.1f dB against before (pass within 6)", after),
+        ]
+        let ok = mic.voiceProcessingActive && standby < 5 && recording < 5 && abs(after) <= 6
+        for (name, t) in rows {
+            Log.write("duck-test \(name): " + t.map { String(format: "%.1f", 20 * log10(max($0, 1e-12))) }.joined(separator: " ") + " dBFS")
+        }
+        for l in lines { print(l); Log.write("duck-test " + l) }
+        let verdict = ok ? "DUCK TEST PASS (other apps keep their volume)" : !mic.voiceProcessingActive ? "DUCK TEST FAIL (voice processing did not start)" : "DUCK TEST FAIL (other apps are turned down)"
+        print(verdict); Log.write("duck-test " + verdict)
+        Thread.sleep(forTimeInterval: 0.5)
+        return ok ? 0 : 1
+    }
+
     /// `PieFlow --aec-probe`: records 2 s of room noise with voice processing on, trying several tap
     /// formats, and logs per channel levels so we can see where the processed voice actually lands.
     static func aecProbe() -> Int32 {
@@ -339,5 +392,91 @@ enum SelfTest {
     static func finish() -> Int32 {
         print(failures == 0 ? "SELFTEST OK" : "SELFTEST FAILED (\(failures))")
         return failures == 0 ? 0 : 1
+    }
+}
+
+/// Measures how loud one test tone is at the raw built in microphone (no voice processing), so a test
+/// can tell whether other apps' audio got turned down. Uses its own capture session.
+final class ToneMeter {
+    private let session = AVCaptureSession()
+    private var delegate: MicRecorder.CaptureDelegate?
+    private let lock = NSLock()
+    private var readings: [(Date, [Double], Double)] = []
+    /// Several tones at once: real ducking lowers all of them equally, a microphone change does not.
+    static let tones: [Double] = [440, 880, 1760, 3100]
+    /// A frequency with no tone in it: if this drops too, the microphone changed, not the playback.
+    private let reference = 1300.0
+
+    init?() {
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+        guard let builtIn = AudioDevices.inputs().first(where: { $0.isBuiltIn }),
+              let cap = devices.first(where: { $0.uniqueID == builtIn.uid }),
+              let input = try? AVCaptureDeviceInput(device: cap), session.canAddInput(input) else { return nil }
+        session.addInput(input)
+        let out = AVCaptureAudioDataOutput()
+        let d = MicRecorder.CaptureDelegate { [weak self] sb in self?.ingest(sb) }
+        out.setSampleBufferDelegate(d, queue: DispatchQueue(label: "pieflow.tonemeter"))
+        guard session.canAddOutput(out) else { return nil }
+        session.addOutput(out)
+        delegate = d
+        session.startRunning()
+    }
+
+    deinit { session.stopRunning() }
+
+
+    /// Goertzel magnitude of the tone in one buffer.
+    private func ingest(_ sb: CMSampleBuffer) {
+        guard sb.isValid, let desc = sb.formatDescription, let asbd = desc.audioStreamBasicDescription else { return }
+        var copy = asbd
+        guard let fmt = AVAudioFormat(streamDescription: &copy) else { return }
+        let frames = AVAudioFrameCount(sb.numSamples)
+        guard frames > 0, let pcm = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return }
+        pcm.frameLength = frames
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sb, at: 0, frameCount: Int32(frames), into: pcm.mutableAudioBufferList) == noErr else { return }
+        let n = Int(frames)
+        let stride = fmt.isInterleaved ? Int(fmt.channelCount) : 1
+        var x = [Double](repeating: 0, count: n)
+        for i in 0..<n {
+            if let f = pcm.floatChannelData { x[i] = Double(f[0][i * stride]) }
+            else if let s16 = pcm.int16ChannelData { x[i] = Double(s16[0][i * stride]) / 32768 }
+            else if let s32 = pcm.int32ChannelData { x[i] = Double(s32[0][i * stride]) / 2_147_483_648 }
+            else { return }
+        }
+        func goertzel(_ hz: Double) -> Double {
+            let coeff = 2 * cos(2 * Double.pi * hz / fmt.sampleRate)
+            var s1 = 0.0, s2 = 0.0
+            for v in x { let s0 = v + coeff * s1 - s2; s2 = s1; s1 = s0 }
+            return sqrt(max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)) / Double(n)
+        }
+        let tone = Self.tones.map(goertzel), noise = goertzel(reference)
+        lock.lock(); readings.append((Date(), tone, noise)); lock.unlock()
+    }
+
+    /// Mean tone level and mean reference (noise) level over a window, both linear.
+    func mean(from: Date, to: Date) -> (tones: [Double], noise: Double) {
+        lock.lock(); defer { lock.unlock() }
+        let v = readings.filter { $0.0 >= from && $0.0 <= to }
+        guard !v.isEmpty else { return (Self.tones.map { _ in 0 }, 0) }
+        let t = Self.tones.indices.map { i in v.map { $0.1[i] }.reduce(0, +) / Double(v.count) }
+        return (t, v.map(\.2).reduce(0, +) / Double(v.count))
+    }
+
+    /// Plays the quiet test tones through the current output from a separate process (so they count as another app's audio).
+    static func playTones(seconds: Double, amplitude: Float = 0.025) -> Process? {
+        let rate = 48_000
+        var samples = [Float](repeating: 0, count: Int(seconds) * rate)
+        for i in samples.indices {
+            var v = 0.0
+            for f in tones { v += sin(2 * Double.pi * f * Double(i) / Double(rate)) }
+            samples[i] = amplitude * Float(v)
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-tone.wav")
+        guard (try? WAV.encode(samples, sampleRate: rate).write(to: url)) != nil else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        p.arguments = [url.path]
+        do { try p.run() } catch { return nil }
+        return p
     }
 }

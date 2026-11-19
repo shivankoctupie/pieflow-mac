@@ -94,11 +94,13 @@ final class Store: ObservableObject {
 
     private func save<T: Encodable>(_ name: String, _ value: T, secret: Bool = false) {
         pending[name]?.cancel()
+        // Encoding happens on the I/O queue too: meetings.json alone is several megabytes, and encoding
+        // it on the main thread froze the interface for a moment after every change.
         let item = DispatchWorkItem { [ioQueue] in
-            let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
-            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-            guard let data = try? enc.encode(value) else { return }
             ioQueue.async {
+                let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                guard let data = try? enc.encode(value) else { return }
                 let url = Paths.support.appendingPathComponent(name)
                 try? data.write(to: url, options: .atomic)
                 if secret { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }

@@ -251,11 +251,10 @@ struct SystemSettings: View {
                 PillToggle(isOn: Binding(get: { store.settings.launchAtLogin }, set: { store.settings.launchAtLogin = $0; LoginItem.set($0) }))
             }
             SettingsRow(title: "Show Flow Bar at all times") { PillToggle(isOn: $store.settings.showFlowBar) }
-            SettingsRow(title: "Show app in dock", divider: false) {
-                PillToggle(isOn: Binding(get: { store.settings.showInDock }, set: {
-                    store.settings.showInDock = $0
-                    NSApp.setActivationPolicy($0 ? .regular : .accessory)
-                    NSApp.activate(ignoringOtherApps: true)
+            SettingsRow(title: "Keep in Dock", subtitle: "PieFlow runs from the menu bar. Its Dock icon shows only while this window is open, unless you turn this on.", divider: false) {
+                PillToggle(isOn: Binding(get: { store.settings.keepInDock }, set: {
+                    store.settings.keepInDock = $0
+                    NotificationCenter.default.post(name: .dockPolicyChanged, object: nil)
                 }))
             }
         }
@@ -479,6 +478,7 @@ struct AboutSettings: View {
 
 extension Notification.Name {
     static let showOnboarding = Notification.Name("pieflow.showOnboarding")
+    static let dockPolicyChanged = Notification.Name("pieflow.dockPolicyChanged")
 }
 
 struct HelpView: View {
