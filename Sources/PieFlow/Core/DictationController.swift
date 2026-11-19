@@ -62,8 +62,17 @@ final class DictationController: ObservableObject {
             self.mic.keepOtherAudioFull()
         }
         prewarmTimer?.fire()
+        // The standby engine now lives across dictations, so it must not outlive a sleep: audio devices
+        // come back different after one. The next tick builds a fresh engine.
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                guard let self, !self.mic.isRunning else { return }
+                self.mic.discardWarm()
+            }
+        }
     }
     private var prewarmTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
 
     func startListening() {
         hotkeys.hotkey = store.settings.hotkey
@@ -137,7 +146,7 @@ final class DictationController: ObservableObject {
     }
 
     func cancel(silent: Bool) {
-        mic.stop()
+        mic.stop(keepWarm: true)
         maxTimer?.invalidate()
         if store.settings.muteWhileDictating { SystemAudio.mute(false) }
         level.value = 0
@@ -147,7 +156,7 @@ final class DictationController: ObservableObject {
     func stopAndProcess() {
         guard isRecording else { return }
         maxTimer?.invalidate()
-        let samples = mic.stop()
+        let samples = mic.stop(keepWarm: true)
         let duration = Date().timeIntervalSince(startedAt)
         if store.settings.muteWhileDictating { SystemAudio.mute(false) }
         Sounds.stop()

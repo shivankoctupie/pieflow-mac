@@ -162,6 +162,8 @@ final class MicRecorder {
     /// playing through its speakers (music, a call, a video) and suppresses background noise, so only the
     /// person at the keyboard is transcribed. Falls back to the plain microphone if the device refuses it.
     private(set) var choice: InputChoice?
+    /// The standby key the running pipeline was started under, so stop() can hand the engine back as standby.
+    private var runningKey: String?
     private var configObserver: NSObjectProtocol?
     private var restarts = 0
     private var watchdog: Timer?
@@ -176,6 +178,7 @@ final class MicRecorder {
         defer { startReturnedAt = Date() }
         let c = AudioDevices.choose(preferredUID: deviceUID, voiceIsolation: voiceIsolation)
         choice = c
+        runningKey = Self.key(c)
         restarts = 0
         lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
         if let w = warm, w.key == Self.key(c) {
@@ -512,9 +515,13 @@ final class MicRecorder {
         onChunk?(chunk)
     }
 
+    /// `keepWarm` hands the engine back as the standby pipeline instead of destroying it. Destroying a
+    /// voice processing engine and building the next one each cut every other app's sound for about a
+    /// second (measured on the system audio: 8 dB down at release, then near silence at the rebuild),
+    /// so a dictation now stops and restarts the same engine, which leaves other audio untouched.
     @discardableResult
-    func stop() -> [Float] {
-        stopEngine()
+    func stop(keepWarm: Bool = false) -> [Float] {
+        stopEngine(keepWarm: keepWarm)
         lock.lock(); defer { lock.unlock() }
         let out = samples
         samples.removeAll()
@@ -523,15 +530,21 @@ final class MicRecorder {
 
     func snapshot() -> [Float] { lock.lock(); defer { lock.unlock() }; return samples }
 
-    private func stopEngine() {
+    private func stopEngine(keepWarm: Bool = false) {
         watchdog?.invalidate(); watchdog = nil
         if let session { session.stopRunning() }
         session = nil; captureDelegate = nil
         if let configObserver { NotificationCenter.default.removeObserver(configObserver); self.configObserver = nil }
         if let engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            if voiceProcessingActive { SystemAudio.restoreOtherAudio() }
+            // Only an engine that ran cleanly is worth keeping: one restarted after a device change goes.
+            if keepWarm, restarts == 0, let key = runningKey {
+                engine.stop()
+                warm = Warm(key: key, backend: .engine(engine, isolate: voiceProcessingActive))
+            } else {
+                engine.inputNode.removeTap(onBus: 0)
+                engine.stop()
+            }
+            if voiceProcessingActive { liftDucking() }
         }
         engine = nil
         isRunning = false

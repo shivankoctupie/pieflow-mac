@@ -314,6 +314,15 @@ if CommandLine.arguments.contains("--mic-test") {
 if CommandLine.arguments.contains("--duck-test") {
     exit(SelfTest.duckTest())
 }
+if CommandLine.arguments.contains("--sys-meter") {
+    exit(SelfTest.sysMeter())
+}
+if CommandLine.arguments.contains("--vp-probe") {
+    exit(SelfTest.vpProbe())
+}
+if CommandLine.arguments.contains("--duck-live") {
+    exit(SelfTest.duckLive())
+}
 if CommandLine.arguments.contains("--aec-probe") {
     exit(SelfTest.aecProbe())
 }

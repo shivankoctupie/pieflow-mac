@@ -19,16 +19,19 @@ enum SelfTest {
         return out
     }
 
-    /// `PieFlow --aec-test`: plays a sentence through the speakers while the mic records, once with
-    /// voice isolation and once without, and prints what each recording contains.
+    /// `PieFlow --aec-test`: plays a sentence through the speakers while the mic records: once without
+    /// voice isolation, once with it, and twice more on the same engine after a stop, the way the app
+    /// reuses it between dictations. Prints what each recording contains.
     static func aecTest() -> Int32 {
         let store = Store.shared
         let transcriber = Transcriber(store: store)
         guard Permissions.microphone else { print("FAIL microphone permission not granted to this process"); Log.write("aec-test FAIL no mic permission"); return 1 }
         var results: [(Bool, Float, String)] = []
-        var liveOn = false
-        for isolate in [false, true] {
-            let mic = MicRecorder()
+        var liveOn = true
+        let passes: [(String, Bool)] = [("isolation OFF", false), ("isolation ON ", true), ("isolation ON, engine reused", true), ("isolation ON, engine reused again", true)]
+        var mic = MicRecorder()
+        for (n, (label, isolate)) in passes.enumerated() {
+            if n == 1 { mic = MicRecorder() }
             do { try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: isolate) } catch { print("FAIL mic: \(error)"); return 1 }
             Thread.sleep(forTimeInterval: 0.5)
             let say = Process()
@@ -36,25 +39,29 @@ enum SelfTest {
             say.arguments = ["-r", "190", "The quick brown fox jumps over the lazy dog while the speakers are playing."]
             try? say.run(); say.waitUntilExit()
             Thread.sleep(forTimeInterval: 0.4)
-            let s = mic.stop()
+            let s = mic.stop(keepWarm: isolate)
             let rms = WAV.rms(s)
             let maxAbs = s.map { abs($0) }.max() ?? 0
             let nonZero = Double(s.filter { $0 != 0 }.count) / Double(max(s.count, 1))
-            Log.write("aec-test isolation=\(isolate) format=\(mic.inputFormatDescription) samples=\(s.count) maxAbs=\(String(format: "%.5f", maxAbs)) nonZero=\(String(format: "%.2f", nonZero))")
-            if isolate { liveOn = s.count > 16_000 && maxAbs > 0 && nonZero > 0.5 }
+            Log.write("aec-test \(label) format=\(mic.inputFormatDescription) samples=\(s.count) maxAbs=\(String(format: "%.5f", maxAbs)) nonZero=\(String(format: "%.2f", nonZero))")
+            if isolate { liveOn = liveOn && s.count > 16_000 && maxAbs > 0 && nonZero > 0.5 && mic.voiceProcessingActive }
             var text = ""
             switch await_({ try await transcriber.transcribe(s, timeout: 60, only: .local) }) {
             case .success(let r): text = r.text
             case .failure(let e): text = "(stt error: \(e.localizedDescription))"
             }
             results.append((isolate, rms, text))
-            let line = "\(isolate ? "isolation ON " : "isolation OFF") voiceProcessing=\(mic.voiceProcessingActive) rms=\(String(format: "%.4f", rms)) heard=\"\(text)\""
+            let line = "\(label) voiceProcessing=\(mic.voiceProcessingActive) rms=\(String(format: "%.4f", rms)) heard=\"\(text)\""
             print(line); Log.write("aec-test " + line)
         }
-        let off = results[0], on = results[1]
-        let leakOff = off.2.lowercased().contains("fox"), leakOn = on.2.lowercased().contains("fox")
-        let ok = liveOn && !leakOn && (on.1 < off.1 * 0.5 || !leakOff)
-        let verdict = ok ? "AEC TEST PASS (mic live, speaker audio removed from the mic signal)"
+        mic.discardWarm()
+        let off = results[0], on = results.dropFirst()
+        let leakOff = off.2.lowercased().contains("fox"), leakOn = on.contains { $0.2.lowercased().contains("fox") }
+        // Judged on what gets transcribed. Loudness is no guide: voice processing applies its own gain,
+        // and at a low speaker volume the processed signal can measure louder than the plain one.
+        let ok = liveOn && !leakOn
+        let verdict = ok ? (leakOff ? "AEC TEST PASS (mic live, speaker audio removed from the mic signal, also on a reused engine)"
+                                    : "AEC TEST PASS, but weak: the sentence did not reach the plain microphone either, turn the volume up")
             : !liveOn ? "AEC TEST FAIL (isolated mic signal is dead)" : "AEC TEST FAIL (speaker audio still reaches transcription)"
         print(verdict); Log.write("aec-test " + verdict)
         Thread.sleep(forTimeInterval: 0.5)
@@ -112,6 +119,147 @@ enum SelfTest {
         print(verdict); Log.write("duck-test " + verdict)
         Thread.sleep(forTimeInterval: 0.5)
         return ok ? 0 : 1
+    }
+
+    /// `PieFlow --sys-meter <seconds> <file> [amplitude] [marker hz]`: what other apps' audio really does.
+    /// Plays test tones from another process and writes the level of the system audio capture (what the
+    /// Notetaker hears) four times a second. The capture is digital and sits after macOS ducking, so it
+    /// shows a duck or a dropout exactly, with tones too quiet to hear. Runs as its own process: start
+    /// it, then run the thing under test (--duck-live, --vp-probe, or the real app while someone dictates).
+    /// Trust this over --duck-test, whose microphone based reading goes dead around voice processing.
+    static func sysMeter() -> Int32 {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--sys-meter"), i + 2 < args.count, let seconds = Double(args[i + 1]) else { print("usage: --sys-meter <seconds> <file>"); return 1 }
+        let capture = SystemAudioCapture()
+        var failure: String?
+        var started = false
+        Task { do { try await capture.start() } catch { failure = error.localizedDescription }; started = true }
+        let t0 = Date()
+        while !started, Date().timeIntervalSince(t0) < 10 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        if let failure { try? "FAIL \(failure)\n".write(toFile: args[i + 2], atomically: true, encoding: .utf8); return 1 }
+        // The capture is digital, so the tones can be far too quiet to hear: pass an amplitude to say how quiet.
+        // A fourth argument asks for one marker tone at that frequency instead, read back on its own, so
+        // the meter still works while music plays over it.
+        let amplitude = i + 3 < args.count ? Float(args[i + 3]) ?? 0.025 : 0.025
+        let marker = i + 4 < args.count ? Double(args[i + 4]) : nil
+        let tone = ToneMeter.playTones(seconds: seconds + 2, amplitude: amplitude, frequencies: marker.map { [$0] } ?? ToneMeter.tones)
+        defer { tone?.terminate() }
+        func level(of hz: Double, in x: ArraySlice<Float>) -> Double {
+            let coeff = 2 * cos(2 * Double.pi * hz / 16_000)
+            var s1 = 0.0, s2 = 0.0
+            for v in x { let s0 = Double(v) + coeff * s1 - s2; s2 = s1; s1 = s0 }
+            return x.isEmpty ? 0 : (max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)).squareRoot() / Double(x.count)
+        }
+        var out = ""
+        var seen = capture.snapshot().count
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            let all = capture.snapshot()
+            let fresh = all[min(seen, all.count)...]
+            seen = all.count
+            var sum = 0.0
+            for s in fresh { sum += Double(s) * Double(s) }
+            let rms = fresh.isEmpty ? 0 : (sum / Double(fresh.count)).squareRoot()
+            let mark = marker.map { String(format: " %.1f", 20 * log10(max(level(of: $0, in: fresh), 1e-12))) } ?? ""
+            out += String(format: "%.2f %.1f %d", Date().timeIntervalSince1970, 20 * log10(max(rms, 1e-12)), fresh.count) + mark + "\n"
+        }
+        try? out.write(toFile: args[i + 2], atomically: true, encoding: .utf8)
+        return 0
+    }
+
+    /// `PieFlow --duck-live <file>`: standby and three dictations in a row with the main run loop alive,
+    /// exactly as the app runs them, writing the time of each step. Each dictation must capture live
+    /// audio and give the microphone back. Read together with --sys-meter, which shows whether other
+    /// apps' audio was touched meanwhile.
+    static func duckLive() -> Int32 {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--duck-live"), i + 1 < args.count else { print("usage: --duck-live <file>"); return 1 }
+        guard Permissions.microphone else { print("FAIL microphone permission not granted to this process"); return 1 }
+        let mic = MicRecorder()
+        var out = ""
+        func mark(_ name: String) { out += String(format: "%.2f %@\n", Date().timeIntervalSince1970, name) }
+        func spin(_ seconds: Double) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+        // The same four second tick the app runs between dictations.
+        let tick = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { _ in
+            guard !mic.isRunning, ProcessInfo.processInfo.environment["PIEFLOW_NO_ISOLATION"] != "1" else { return }
+            mic.prewarm(deviceUID: nil, voiceIsolation: true)
+            mic.keepOtherAudioFull()
+        }
+        var ok = true
+        let me = UInt32(ProcessInfo.processInfo.processIdentifier)
+        // PIEFLOW_NO_ISOLATION=1 records without echo cancellation, to show what the tone looks like uncancelled.
+        let isolate = ProcessInfo.processInfo.environment["PIEFLOW_NO_ISOLATION"] != "1"
+        mark("begin"); spin(3)
+        mark("standby"); if isolate { tick.fire() }; spin(3)
+        for round in 1...3 {
+            mark("fn down \(round)")
+            do { try mic.start(deviceUID: nil, voiceIsolation: isolate) } catch { mark("start failed: \(error.localizedDescription)"); ok = false }
+            let took = Int(mic.startReturnedAt.timeIntervalSince(mic.startCalledAt) * 1000)
+            spin(3)
+            let s = mic.stop(keepWarm: true)
+            let live = Double(s.filter { $0 != 0 }.count) / Double(max(1, s.count))
+            spin(0.6)
+            let holding = MeetingWatcher.processesUsingMic(excludingPID: 0).contains { $0.pid == me }
+            let good = s.count > 32_000 && live > 0.5 && !holding && mic.voiceProcessingActive == isolate
+            ok = ok && good
+            // How much of a 440 Hz tone played by another app is left in the recording: echo cancellation
+            // must remove it just as well on a restarted engine as on a fresh one.
+            let coeff = 2 * cos(2 * Double.pi * 440 / MicRecorder.sampleRate)
+            var s1 = 0.0, s2 = 0.0
+            for v in s { let s0 = Double(v) + coeff * s1 - s2; s2 = s1; s1 = s0 }
+            let tone = 20 * log10(max((max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)).squareRoot() / Double(max(1, s.count)), 1e-12))
+            mark(String(format: "fn up %d: %@ start %d ms, %d samples, %.0f%% non zero, mic still held %@, level %.1f dBFS, 440 Hz left %.1f dBFS", round, good ? "PASS" : "FAIL", took, s.count, live * 100, holding ? "yes" : "no", 20 * log10(max(Double(WAV.rms(s)), 1e-12)), tone))
+            spin(5.4)
+        }
+        tick.invalidate()
+        mark("teardown"); mic.discardWarm(); spin(2)
+        mark(ok ? "end: MIC REUSE PASS" : "end: MIC REUSE FAIL")
+        try? out.write(toFile: args[i + 1], atomically: true, encoding: .utf8)
+        return ok ? 0 : 1
+    }
+
+    /// `PieFlow --vp-probe <file> <release|stop|pause>`: what ending a dictation does to other apps' audio,
+    /// for three ways of ending it: throwing the voice processing engine away and building a new one,
+    /// stopping it and starting the same one again, or pausing it. Read together with --sys-meter.
+    static func vpProbe() -> Int32 {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--vp-probe"), i + 2 < args.count else { print("usage: --vp-probe <file> <release|stop|pause>"); return 1 }
+        guard Permissions.microphone else { print("FAIL microphone permission not granted to this process"); return 1 }
+        let variant = args[i + 2]
+        var out = ""
+        func mark(_ name: String) { out += String(format: "%.2f %@\n", Date().timeIntervalSince1970, name) }
+        func spin(_ seconds: Double) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+        func lift() { SystemAudio.setOtherAudioLevel(1); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { SystemAudio.setOtherAudioLevel(1) } }
+        func build() -> AVAudioEngine? {
+            let e = AVAudioEngine()
+            do { try e.inputNode.setVoiceProcessingEnabled(true) } catch { mark("voice processing failed: \(error.localizedDescription)"); return nil }
+            e.inputNode.isVoiceProcessingAGCEnabled = false
+            e.inputNode.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
+            e.inputNode.installTap(onBus: 0, bufferSize: 2048, format: nil) { _, _ in }
+            e.prepare()
+            lift()
+            return e
+        }
+        mark("begin"); spin(3)
+        mark("build"); guard var engine = build() else { try? out.write(toFile: args[i + 1], atomically: true, encoding: .utf8); return 1 }
+        spin(3)
+        for round in 1...2 {
+            mark("start \(round)"); do { try engine.start() } catch { mark("start failed: \(error.localizedDescription)") }
+            lift(); spin(3)
+            switch variant {
+            case "pause": mark("pause \(round)"); engine.pause(); lift()
+            case "stop": mark("stop \(round)"); engine.stop(); lift()
+            default:
+                mark("release \(round)"); engine.inputNode.removeTap(onBus: 0); engine.stop(); lift(); spin(3)
+                mark("rebuild \(round)"); if let e = build() { engine = e }
+            }
+            spin(3)
+        }
+        mark("teardown"); engine.inputNode.removeTap(onBus: 0); engine.stop(); SystemAudio.setOtherAudioLevel(1); spin(2)
+        mark("end")
+        try? out.write(toFile: args[i + 1], atomically: true, encoding: .utf8)
+        return 0
     }
 
     /// `PieFlow --aec-probe`: records 2 s of room noise with voice processing on, trying several tap
@@ -463,12 +611,12 @@ final class ToneMeter {
     }
 
     /// Plays the quiet test tones through the current output from a separate process (so they count as another app's audio).
-    static func playTones(seconds: Double, amplitude: Float = 0.025) -> Process? {
+    static func playTones(seconds: Double, amplitude: Float = 0.025, frequencies: [Double] = tones) -> Process? {
         let rate = 48_000
         var samples = [Float](repeating: 0, count: Int(seconds) * rate)
         for i in samples.indices {
             var v = 0.0
-            for f in tones { v += sin(2 * Double.pi * f * Double(i) / Double(rate)) }
+            for f in frequencies { v += sin(2 * Double.pi * f * Double(i) / Double(rate)) }
             samples[i] = amplitude * Float(v)
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-tone.wav")
