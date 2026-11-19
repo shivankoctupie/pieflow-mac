@@ -35,7 +35,48 @@ final class LLM {
         throw PieError(errors.isEmpty ? "No AI provider set up. Add a Groq or xAI key in Settings." : errors.joined(separator: "\n"))
     }
 
-    enum Provider { case groq, xai }
+    /// For the dictation path, where polish is optional and waiting is not: the whole call ends within
+    /// `deadline`, and a service that stalled a moment ago is not asked again until it has recovered.
+    /// Before this a dead connection cost the full 6 s request timeout on every dictation.
+    func completeFast(system: String, user: String, deadline: TimeInterval, maxTokens: Int) async throws -> String {
+        let ready = ([.groq, .xai] as [Provider]).filter { !key(for: $0).isEmpty }
+        let providers = ready.filter { !CloudHealth.isSlow($0.service, use: "chat") }
+        guard let first = providers.first else {
+            throw PieError(ready.isEmpty ? "No AI provider set up." : "\(ready[0].label) was slow a moment ago")
+        }
+        do {
+            return try await Deadline.run(deadline) { [self] in
+                var errors: [String] = []
+                for p in providers {
+                    do {
+                        let out = try await chatRecovering(provider: p, system: system, user: user, timeout: deadline, maxTokens: maxTokens)
+                        CloudHealth.markOK(p.service, use: "chat")
+                        return out
+                    } catch {
+                        if Task.isCancelled { throw error }
+                        CloudHealth.markSlow(p.service, use: "chat", after: error)
+                        errors.append("\(p.label): \(error.localizedDescription)")
+                    }
+                }
+                throw PieError(errors.joined(separator: "\n"))
+            }
+        } catch {
+            // The deadline passed with a request still open: that service is the slow one.
+            if (error as? PieError)?.message.hasPrefix("no answer in") == true {
+                CloudHealth.markSlow(first.service, use: "chat")
+                throw PieError("\(first.label): \(error.localizedDescription)")
+            }
+            throw error
+        }
+    }
+
+    enum Provider {
+        case groq, xai
+        var label: String { self == .groq ? "Groq" : "xAI" }
+        var service: String { self == .groq ? "groq" : "xai" }
+    }
+
+    private func key(for p: Provider) -> String { p == .groq ? store.keys.groq : store.keys.xai }
 
     /// Preferred cleanup models, best first. Providers retire models often (Groq dropped all Llama
     /// models in 2026), so when the configured one is gone we pick the first of these the key can use.
@@ -115,7 +156,11 @@ final class TextEngine {
         return false
     }
 
-    func process(_ raw: String, category: AppCategory, appName: String?) async -> String {
+    /// Cleanup usually takes 0.27 s and 95 in 100 finish within 1.05 s (250 logged runs). Past this
+    /// limit the text goes out with the built in rules only.
+    static let cleanupDeadline: TimeInterval = 2.0
+
+    func process(_ raw: String, category: AppCategory, appName: String?, cleanupDeadline: TimeInterval = TextEngine.cleanupDeadline) async -> String {
         var text = rules(raw)
         if let snip = exactSnippet(text) { return snip }
         let t0 = Date()
@@ -124,8 +169,8 @@ final class TextEngine {
             text = applyTone(text, category: category)
         } else if store.settings.aiCleanup && llm.hasCloud && text.split(separator: " ").count >= 3 {
             do {
-                let polished = try await llm.complete(system: cleanupPrompt(category: category, appName: appName),
-                                                      user: "<transcript>\n\(text)\n</transcript>", timeout: 6, maxTokens: 1024)
+                let polished = try await llm.completeFast(system: cleanupPrompt(category: category, appName: appName),
+                                                          user: "<transcript>\n\(text)\n</transcript>", deadline: cleanupDeadline, maxTokens: 1024)
                 let stripped = polished.replacingOccurrences(of: #"</?transcript>"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if Self.sane(stripped, versus: text) {

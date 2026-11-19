@@ -7,11 +7,56 @@ final class FlowBarPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Where the Flow Bar sits. The pill hangs from the bottom centre of its panel, and that point (the
+/// anchor) is what gets placed: bottom centre of the screen by default, or wherever the user dragged it.
+/// A dragged spot is kept as a fraction of the usable screen, so it is the same spot on any display.
+enum FlowBarLayout {
+    static let size = NSSize(width: 420, height: 90)
+    /// Default gap between the pill's panel and the bottom of the usable screen.
+    static let restGap: CGFloat = 6
+    /// Kept clear on either side of the anchor so the pill is not cut by the screen edge when it widens.
+    static let sideMargin: CGFloat = 135
+    /// Kept clear above the anchor: the tallest pill plus its shadow.
+    static let topMargin: CGFloat = 52
+    /// Dropped this close to the default spot, the pill goes back to it.
+    static let snap: CGFloat = 28
+
+    static func defaultAnchor(in vf: NSRect) -> NSPoint { NSPoint(x: vf.midX, y: vf.minY + restGap) }
+
+    static func clamp(_ a: NSPoint, in vf: NSRect) -> NSPoint {
+        let side = min(sideMargin, vf.width / 2)
+        return NSPoint(x: min(max(a.x, vf.minX + side), vf.maxX - side),
+                       y: min(max(a.y, vf.minY), max(vf.minY, vf.maxY - topMargin)))
+    }
+
+    static func anchor(in vf: NSRect, x: Double?, y: Double?) -> NSPoint {
+        guard let x, let y else { return defaultAnchor(in: vf) }
+        return clamp(NSPoint(x: vf.minX + CGFloat(x) * vf.width, y: vf.minY + CGFloat(y) * vf.height), in: vf)
+    }
+
+    /// nil when the anchor is at (or was dropped next to) the default spot.
+    static func fractions(of a: NSPoint, in vf: NSRect) -> (x: Double, y: Double)? {
+        let d = defaultAnchor(in: vf)
+        if abs(a.x - d.x) <= snap, abs(a.y - d.y) <= snap { return nil }
+        guard vf.width > 0, vf.height > 0 else { return nil }
+        return (Double((a.x - vf.minX) / vf.width), Double((a.y - vf.minY) / vf.height))
+    }
+
+    static func origin(for anchor: NSPoint) -> NSPoint { NSPoint(x: anchor.x - size.width / 2, y: anchor.y) }
+    static func anchor(of frame: NSRect) -> NSPoint { NSPoint(x: frame.midX, y: frame.minY) }
+}
+
 final class FlowBarController {
     private var panel: FlowBarPanel?
-    private var watching: AnyCancellable?
+    private var watching: Set<AnyCancellable> = []
     let dictation: DictationController
     let store: Store
+
+    /// Tests replace these two: where the mouse is, and what a click on the pill does.
+    var mouseLocation: () -> NSPoint = { NSEvent.mouseLocation }
+    lazy var onTap: () -> Void = { [weak self] in self?.dictation.toggleFromUI() }
+    /// Set while the pill is being dragged: where the mouse and the panel were when the drag began.
+    private var drag: (mouse: NSPoint, origin: NSPoint)?
 
     init(dictation: DictationController, store: Store) {
         self.dictation = dictation
@@ -20,7 +65,7 @@ final class FlowBarController {
 
     func show() {
         if panel == nil {
-            let p = FlowBarPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 90),
+            let p = FlowBarPanel(contentRect: NSRect(origin: .zero, size: FlowBarLayout.size),
                                  styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             p.isOpaque = false
             p.backgroundColor = .clear
@@ -32,7 +77,11 @@ final class FlowBarController {
             // Hiding the app (Cmd+H, or macOS hiding it by itself) takes every window that can hide with
             // it. The Flow Bar went too, so dictation kept working with nothing on screen.
             p.canHide = false
-            let host = NSHostingView(rootView: FlowBarView(dictation: dictation, store: store))
+            let view = FlowBarView(dictation: dictation, store: store,
+                                   onTap: { [weak self] in self?.onTap() },
+                                   onDrag: { [weak self] travelled in self?.dragMoved(travelled: travelled) },
+                                   onDragEnd: { [weak self] in self?.dragEnded() })
+            let host = NSHostingView(rootView: view)
             host.frame = p.contentRect(forFrameRect: p.frame)
             p.contentView = host
             panel = p
@@ -40,11 +89,16 @@ final class FlowBarController {
                 self?.position()
             }
             // Come back to the front, on the screen being worked on, every time a dictation starts.
-            watching = dictation.$phase.sink { [weak self] phase in
+            dictation.$phase.sink { [weak self] phase in
                 guard case .recording = phase else { return }
                 self?.position()
                 self?.panel?.orderFrontRegardless()
-            }
+            }.store(in: &watching)
+            // "Reset" in Settings clears the saved spot; move as soon as it does.
+            store.$settings.map { [$0.flowBarX, $0.flowBarY] }.removeDuplicates().dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.position() }
+                .store(in: &watching)
         }
         position()
         panel?.orderFrontRegardless()
@@ -52,18 +106,57 @@ final class FlowBarController {
 
     var frame: NSRect? { panel?.frame }
 
+    private func screen(at point: NSPoint) -> NSScreen? {
+        NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) }
+    }
+
+    /// Puts the pill at its spot (default or dragged) on the screen the mouse is on.
     func position() {
+        guard let panel, drag == nil else { return }
+        guard let screen = screen(at: mouseLocation()) ?? NSScreen.main else { return }
+        let anchor = FlowBarLayout.anchor(in: screen.visibleFrame, x: store.settings.flowBarX, y: store.settings.flowBarY)
+        panel.setFrameOrigin(FlowBarLayout.origin(for: anchor))
+    }
+
+    // MARK: dragging
+
+    /// Called for every mouse move of a drag on the pill. The panel follows the real mouse position:
+    /// the gesture's own coordinates are relative to the panel, which is the thing being moved. Only the
+    /// first call uses `travelled` (how far the press had moved before it counted as a drag, in SwiftUI's
+    /// downward y), to find where the press began, so the pill stays exactly under the pointer.
+    func dragMoved(travelled: CGSize = .zero) {
         guard let panel else { return }
-        let mouse = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main else { return }
-        let vf = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: vf.midX - panel.frame.width / 2, y: vf.minY + 6))
+        let mouse = mouseLocation()
+        if drag == nil { drag = (NSPoint(x: mouse.x - travelled.width, y: mouse.y + travelled.height), panel.frame.origin) }
+        guard let drag else { return }
+        var anchor = NSPoint(x: drag.origin.x + panel.frame.width / 2 + mouse.x - drag.mouse.x,
+                             y: drag.origin.y + mouse.y - drag.mouse.y)
+        if let screen = screen(at: mouse) ?? panel.screen { anchor = FlowBarLayout.clamp(anchor, in: screen.visibleFrame) }
+        panel.setFrameOrigin(FlowBarLayout.origin(for: anchor))
+    }
+
+    /// The drop: remember the spot, or forget it when the pill was put back at the bottom centre.
+    func dragEnded() {
+        guard let panel, drag != nil else { return }
+        drag = nil
+        let anchor = FlowBarLayout.anchor(of: panel.frame)
+        guard let screen = screen(at: anchor) ?? panel.screen ?? NSScreen.main else { return }
+        let spot = FlowBarLayout.fractions(of: anchor, in: screen.visibleFrame)
+        var settings = store.settings
+        settings.flowBarX = spot?.x
+        settings.flowBarY = spot?.y
+        store.settings = settings
+        Log.write(spot.map { String(format: "flow bar moved to %.3f, %.3f of the screen", $0.x, $0.y) } ?? "flow bar back at bottom centre")
+        position()
     }
 }
 
 struct FlowBarView: View {
     @ObservedObject var dictation: DictationController
     @ObservedObject var store: Store
+    var onTap: () -> Void = {}
+    var onDrag: (CGSize) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
     @State private var hover = false
 
     /// What the pill is showing. One capsule changes size between these, so states flow into each other.
@@ -114,9 +207,13 @@ struct FlowBarView: View {
                 .padding(.bottom, isSmall ? 10 : 8)   // room for the shadow, which the panel edge would cut
                 .contentShape(Rectangle())
                 .onHover { hover = $0 }
-                .onTapGesture { if isIdle { dictation.toggleFromUI() } }
+                .onTapGesture { if isIdle { onTap() } }
+                // Drag the pill to move it. A press that does not travel stays a click.
+                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                    .onChanged { onDrag($0.translation) }
+                    .onEnded { _ in onDragEnd() })
         }
-        .frame(width: 420, height: 90)
+        .frame(width: FlowBarLayout.size.width, height: FlowBarLayout.size.height)
         .animation(.spring(response: 0.28, dampingFraction: 0.76), value: shape)
     }
 

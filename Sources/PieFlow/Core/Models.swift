@@ -240,6 +240,9 @@ struct Settings: Codable {
     var cleanupModelXAI = "grok-4-fast-non-reasoning"
     var launchAtLogin = false
     var showFlowBar = true
+    /// Where the Flow Bar was dragged to, as a fraction of the usable screen. nil = bottom centre.
+    var flowBarX: Double?
+    var flowBarY: Double?
     var keepInDock = false
     var sounds = true
     var muteWhileDictating = false
@@ -282,6 +285,8 @@ struct Settings: Codable {
         cleanupModelXAI = v(.cleanupModelXAI, d.cleanupModelXAI)
         launchAtLogin = v(.launchAtLogin, d.launchAtLogin)
         showFlowBar = v(.showFlowBar, d.showFlowBar)
+        flowBarX = v(.flowBarX, d.flowBarX)
+        flowBarY = v(.flowBarY, d.flowBarY)
         keepInDock = v(.keepInDock, d.keepInDock)
         sounds = v(.sounds, d.sounds)
         muteWhileDictating = v(.muteWhileDictating, d.muteWhileDictating)

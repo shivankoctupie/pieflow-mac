@@ -302,8 +302,11 @@ extension AppDelegate: NSMenuDelegate {
 if CommandLine.arguments.contains("--selftest") {
     exit(SelfTest.run())
 }
-for (flag, fn) in [("--pipeline-test", SelfTest.pipelineTest), ("--watcher-test", SelfTest.watcherTest), ("--edit-test", SelfTest.editTest), ("--summarize-test", SelfTest.summarizeTest)] as [(String, () -> Int32)] {
+for (flag, fn) in [("--pipeline-test", SelfTest.pipelineTest), ("--watcher-test", SelfTest.watcherTest), ("--edit-test", SelfTest.editTest), ("--summarize-test", SelfTest.summarizeTest), ("--hedge-test", SelfTest.hedgeTest)] as [(String, () -> Int32)] {
     if CommandLine.arguments.contains(flag) { exit(fn()) }
+}
+if CommandLine.arguments.contains("--bar-drag-test") {
+    exit(BarDragTest.run())
 }
 if CommandLine.arguments.contains("--drop-test") {
     exit(SelfTest.dropTest())

@@ -28,7 +28,14 @@ struct Multipart {
 }
 
 enum HTTP {
+    /// Tests set this to make every request stall, the way a bad connection does.
+    static var stallForTests: TimeInterval = 0
+    /// Tests set this to make every request fail at once, as if the Mac were offline.
+    static var offlineForTests = false
+
     static func send(_ req: URLRequest) async throws -> [String: Any] {
+        if offlineForTests { throw URLError(.notConnectedToInternet) }
+        if stallForTests > 0 { try await Task.sleep(nanoseconds: UInt64(stallForTests * 1e9)) }
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -41,6 +48,49 @@ enum HTTP {
         guard let obj else { throw PieError("Unreadable response from server") }
         return obj
     }
+}
+
+/// A hard limit on the whole of an async call. `URLRequest.timeoutInterval` only measures silence
+/// between packets, so a slow trickle can run far past it.
+enum Deadline {
+    static func run<T>(_ seconds: TimeInterval, _ work: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+                throw PieError(String(format: "no answer in %.1f s", seconds))
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+}
+
+/// Remembers that a cloud service just stalled or failed, so the next dictation does not wait on it
+/// again. The mark wears off by itself, and a good answer clears it. A network failure counts against
+/// everything on that service; an answer like "rate limited" counts only against the part that got it
+/// (`use` is "stt" or "chat"), because the other part may be fine.
+enum CloudHealth {
+    private static let lock = NSLock()
+    private static var slowUntil: [String: Date] = [:]
+
+    static func markSlow(_ service: String, use: String, after error: Error? = nil, for seconds: TimeInterval = 30) {
+        let wholeService = error == nil || error is URLError
+        lock.lock(); slowUntil[wholeService ? service : "\(service)/\(use)"] = Date().addingTimeInterval(seconds); lock.unlock()
+    }
+    static func markOK(_ service: String, use: String) {
+        lock.lock(); slowUntil[service] = nil; slowUntil["\(service)/\(use)"] = nil; lock.unlock()
+    }
+    static func isSlow(_ service: String, use: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        return (slowUntil[service] ?? .distantPast) > now || (slowUntil["\(service)/\(use)"] ?? .distantPast) > now
+    }
+}
+
+extension STTProvider {
+    /// The service behind the engine, shared with AI cleanup: Groq transcribes and polishes from one host.
+    var service: String { self == .grok ? "xai" : rawValue }
 }
 
 final class Transcriber {
@@ -113,26 +163,21 @@ final class Transcriber {
     }
 
     func transcribe(_ samples: [Float], timeout: TimeInterval? = nil, only: STTProvider? = nil) async throws -> TranscriptionResult {
-        let order = only.map { [$0] } ?? store.settings.providerOrder
+        let order = (only.map { [$0] } ?? store.settings.providerOrder).filter(isAvailable)
         let t0 = Date()
         let up = Self.upload(for: samples)
-        let wav = (up.mime == "audio/wav") ? up.data : Data()
-        let encodeMs = Int(Date().timeIntervalSince(t0) * 1000)
-        let seconds = Double(samples.count) / MicRecorder.sampleRate
+        let job = Job(samples: samples, up: up, encodeMs: Int(Date().timeIntervalSince(t0) * 1000),
+                      seconds: Double(samples.count) / MicRecorder.sampleRate)
+        // A dictation (no explicit timeout, no fixed engine) with a cloud engine first and a local model
+        // on disk never waits out a stalled connection: see `hedged`.
+        let cloud = Array(order.prefix { $0 != .local })
+        if timeout == nil, only == nil, !cloud.isEmpty, order.contains(.local) {
+            return try await hedged(job, cloud: cloud)
+        }
         var errors: [String] = []
-        for p in order where isAvailable(p) {
-            do {
-                let t = timeout ?? (8 + seconds * 0.5)
-                let t1 = Date()
-                let r: TranscriptionResult
-                switch p {
-                case .grok: r = try await grok(up, timeout: t)
-                case .groq: r = try await groq(up, timeout: t)
-                case .local: r = try await local(wav.isEmpty ? WAV.encode(samples) : wav)
-                }
-                Log.write("stt ok via \(p.rawValue) (\(String(format: "%.1f", seconds))s audio, \(up.data.count / 1024) KB \(up.filename.suffix(3)), encode \(encodeMs) ms, request \(Int(Date().timeIntervalSince(t1) * 1000)) ms)")
-                return TranscriptionResult(text: Self.clean(r.text), segments: r.segments, engine: r.engine)
-            } catch {
+        for p in order {
+            do { return try await run(p, job, timeout: timeout ?? (8 + job.seconds * 0.5)) }
+            catch {
                 Log.write("stt \(p.rawValue) failed: \(error.localizedDescription)")
                 errors.append("\(p.label): \(error.localizedDescription)")
             }
@@ -141,6 +186,134 @@ final class Transcriber {
             throw PieError("No transcription engine is set up. Add a Grok or Groq key, or download a local model in Settings.")
         }
         throw PieError(errors.joined(separator: "\n"))
+    }
+
+    private struct Job {
+        let samples: [Float]
+        let up: Upload
+        let encodeMs: Int
+        let seconds: Double
+    }
+
+    /// One engine, one attempt, with the timing line the log is read by.
+    private func run(_ p: STTProvider, _ job: Job, timeout: TimeInterval) async throws -> TranscriptionResult {
+        let t1 = Date()
+        let r: TranscriptionResult
+        switch p {
+        case .grok: r = try await grok(job.up, timeout: timeout)
+        case .groq: r = try await groq(job.up, timeout: timeout)
+        case .local: r = try await local(job.up.mime == "audio/wav" ? job.up.data : WAV.encode(job.samples))
+        }
+        Log.write("stt ok via \(p.rawValue) (\(String(format: "%.1f", job.seconds))s audio, \(job.up.data.count / 1024) KB \(job.up.filename.suffix(3)), encode \(job.encodeMs) ms, request \(Int(Date().timeIntervalSince(t1) * 1000)) ms)")
+        return TranscriptionResult(text: Self.clean(r.text), segments: r.segments, engine: r.engine)
+    }
+
+    /// How long a dictation waits on the cloud. Measured over 2,050 Groq requests: half answer within
+    /// 0.39 s and 99 in 100 within 1.2 s, but the rest stall for up to 13 s on a bad connection, while
+    /// the local model answers a short clip in about 0.3 s.
+    enum Hedge {
+        /// The local model starts this long after the cloud request, so it is ready if the cloud stalls.
+        static let startLocal: TimeInterval = 0.7
+        /// After this long the local answer is used. Before it, the cloud answer wins: it is more accurate.
+        static let patience: TimeInterval = 1.8
+        /// The same two limits while the service is marked slow: no head start, and just enough patience
+        /// for a healthy answer to show the trouble has passed.
+        static let startLocalWhenSlow: TimeInterval = 0
+        static let patienceWhenSlow: TimeInterval = 0.9
+    }
+
+    private enum Raced {
+        case cloud(TranscriptionResult), cloudFailed([String])
+        case local(TranscriptionResult), localFailed(String)
+        case startLocal, patienceOver
+    }
+
+    /// Cloud first, with the local model as a safety net that does not wait for the cloud to give up.
+    /// Before this, a stalled Groq request held the text for its whole timeout (9 s or more), and only
+    /// then did the local model get its 0.3 s.
+    private func hedged(_ job: Job, cloud: [STTProvider]) async throws -> TranscriptionResult {
+        let slow = CloudHealth.isSlow(cloud[0].service, use: "stt")
+        let startLocal = slow ? Hedge.startLocalWhenSlow : Hedge.startLocal
+        let patience = slow ? Hedge.patienceWhenSlow : Hedge.patience
+        let began = Date()
+        return try await withThrowingTaskGroup(of: Raced.self) { group in
+            group.addTask { [self] in
+                var errors: [String] = []
+                for p in cloud {
+                    // A pooled connection the server already closed fails at once; a fresh one usually works.
+                    for attempt in 1...2 {
+                        do {
+                            let r = try await run(p, job, timeout: 8 + job.seconds * 0.5)
+                            CloudHealth.markOK(p.service, use: "stt")
+                            return .cloud(r)
+                        } catch {
+                            if Task.isCancelled { return .cloudFailed([]) }
+                            if attempt == 1, (error as? URLError)?.code == .networkConnectionLost {
+                                Log.write("stt \(p.rawValue): connection was stale, retrying on a fresh one")
+                                continue
+                            }
+                            Log.write("stt \(p.rawValue) failed: \(error.localizedDescription)")
+                            errors.append("\(p.label): \(error.localizedDescription)")
+                            CloudHealth.markSlow(p.service, use: "stt", after: error)
+                            break
+                        }
+                    }
+                }
+                return .cloudFailed(errors)
+            }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(startLocal * 1e9)); return .startLocal }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(patience * 1e9)); return .patienceOver }
+            defer { group.cancelAll() }
+
+            var localStarted = false, patienceOver = false
+            var localResult: TranscriptionResult?
+            var cloudErrors: [String]?, localError: String?
+            func runLocal() {
+                guard !localStarted else { return }
+                localStarted = true
+                group.addTask { [self] in
+                    do { return .local(try await run(.local, job, timeout: 0)) }
+                    catch { return .localFailed(error.localizedDescription) }
+                }
+            }
+            func allFailed() -> PieError {
+                PieError(((cloudErrors ?? []) + [localError.map { "\(STTProvider.local.label): \($0)" }].compactMap { $0 }).joined(separator: "\n"))
+            }
+            while let event = try await group.next() {
+                if Task.isCancelled { throw CancellationError() }
+                switch event {
+                case .cloud(let r):
+                    return r
+                case .cloudFailed(let errors):
+                    cloudErrors = errors
+                    if let localResult { return localResult }
+                    if localError != nil { throw allFailed() }
+                    runLocal()
+                case .startLocal:
+                    if cloudErrors == nil { runLocal() }
+                case .patienceOver:
+                    patienceOver = true
+                    if let localResult { return usingLocal(localResult, cloud[0], began, alreadySlow: slow) }
+                case .local(let r):
+                    if cloudErrors != nil { return r }
+                    if patienceOver { return usingLocal(r, cloud[0], began, alreadySlow: slow) }
+                    localResult = r
+                case .localFailed(let message):
+                    localError = message
+                    if !Task.isCancelled { Log.write("stt local failed: \(message)") }
+                    if cloudErrors != nil { throw allFailed() }
+                }
+            }
+            throw allFailed()
+        }
+    }
+
+    /// `alreadySlow`: the mark is not renewed while it is set. So on a connection that stays bad, one
+    /// dictation every half minute gives the cloud its full patience again, and finds out if it is back.
+    private func usingLocal(_ r: TranscriptionResult, _ stalled: STTProvider, _ began: Date, alreadySlow: Bool) -> TranscriptionResult {
+        Log.write("stt \(stalled.rawValue) still silent after \(Int(Date().timeIntervalSince(began) * 1000)) ms, using the local answer")
+        if !alreadySlow { CloudHealth.markSlow(stalled.service, use: "stt") }
+        return r
     }
 
     static func clean(_ s: String) -> String {
@@ -265,10 +438,29 @@ final class Transcriber {
 
 enum Shell {
     /// Runs a process off the main thread and collects its output.
+    /// Cancelling the calling task stops the process, so a transcription nobody is waiting for any
+    /// more does not keep the CPU busy.
     static func run(_ exe: URL, _ args: [String], stdin: String? = nil, timeout: TimeInterval = 600) async throws -> (Int32, String, String) {
+        let p = Process()
+        let stop = StopFlag()
+        return try await withTaskCancellationHandler {
+            try await start(p, stop, exe, args, stdin: stdin, timeout: timeout)
+        } onCancel: {
+            stop.set()
+            if p.isRunning { p.terminate() }
+        }
+    }
+
+    private final class StopFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    private static func start(_ p: Process, _ stop: StopFlag, _ exe: URL, _ args: [String], stdin: String?, timeout: TimeInterval) async throws -> (Int32, String, String) {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
-                let p = Process()
                 p.executableURL = exe
                 p.arguments = args
                 var env = ProcessInfo.processInfo.environment
@@ -286,6 +478,7 @@ enum Shell {
                 DispatchQueue.global().async { outData = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
                 DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
                 do { try p.run() } catch { cont.resume(throwing: error); return }
+                if stop.isSet { p.terminate() }   // cancelled before the process existed
                 if let stdin { inPipe.fileHandleForWriting.write(stdin.data(using: .utf8)!) }
                 try? inPipe.fileHandleForWriting.close()
                 let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }

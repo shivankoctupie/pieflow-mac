@@ -402,6 +402,68 @@ enum SelfTest {
         print("PIPELINE TEST DONE"); return 0
     }
 
+    /// `--hedge-test`: a stalled or dead cloud connection must not hold a dictation. Makes every cloud
+    /// request stall for 12 s (or fail), then times transcription and cleanup. Needs a cloud key first
+    /// in the engine order and a local model. Pastes nothing and never starts the microphone.
+    static func hedgeTest() -> Int32 {
+        let store = Store.shared
+        let transcriber = Transcriber(store: store)
+        let engine = TextEngine(store: store, llm: LLM(store: store))
+        let order = store.settings.providerOrder.filter(transcriber.isAvailable)
+        guard let first = order.first, first != .local, order.contains(.local) else {
+            print("HEDGE TEST SKIP: needs a cloud engine first and a local model (order: \(order.map(\.rawValue)))"); return 0
+        }
+        let aiff = FileManager.default.temporaryDirectory.appendingPathComponent("pieflow-hedge.aiff")
+        let say = Process(); say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-o", aiff.path, "um so I think we should uh ship the pricing page on Tuesday, no wait, Friday"]
+        try? say.run(); say.waitUntilExit()
+        guard let samples = try? WAV.readMono16k(aiff) else { print("FAIL sample"); return 1 }
+        // The first local run on a Mac compiles Metal shaders; the app does this at launch too.
+        _ = await_({ try await transcriber.transcribe(samples, timeout: 60, only: .local) })
+        var ok = true
+        func stt(_ name: String, wantLocal: Bool?, within limit: Int) {
+            let t0 = Date()
+            let r = await_({ try await transcriber.transcribe(samples) })
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            switch r {
+            case .failure(let e): ok = false; print("FAIL \(name): \(e.localizedDescription)")
+            case .success(let res):
+                let isLocal = res.engine == "Local"
+                let pass = ms <= limit && (wantLocal == nil || wantLocal == isLocal) && !res.text.isEmpty
+                ok = ok && pass
+                print("\(pass ? "PASS" : "FAIL") \(name): \(ms) ms via \(res.engine) (limit \(limit) ms) \"\(res.text)\"")
+            }
+        }
+        /// `wantPolished: nil` checks the time only: whether the real cloud answers is up to the network.
+        func cleanup(_ name: String, within limit: Int, wantPolished: Bool?) {
+            let t0 = Date()
+            let out = (try? await_({ await engine.process("um so i think we should uh ship it on tuesday no wait friday", category: .work, appName: "Slack") }).get()) ?? ""
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            let polished = out.contains("Friday") && !out.lowercased().contains("tuesday")
+            let pass = ms <= limit && !out.isEmpty && (wantPolished == nil || polished == wantPolished)
+            ok = ok && pass
+            print("\(pass ? "PASS" : "FAIL") \(name): \(ms) ms (limit \(limit) ms, \(polished ? "polished by AI" : "rules only")) \"\(out)\"")
+        }
+        transcriber.warmConnection()
+        Thread.sleep(forTimeInterval: 0.8)
+        stt("healthy network", wantLocal: nil, within: 3000)
+        HTTP.stallForTests = 12
+        stt("cloud stalls, first time", wantLocal: true, within: 3000)
+        stt("cloud stalls, again (marked slow)", wantLocal: true, within: 1700)
+        CloudHealth.markOK(first.service, use: "chat")
+        cleanup("cleanup while the cloud stalls", within: 2400, wantPolished: false)
+        cleanup("cleanup again (marked slow)", within: 300, wantPolished: false)
+        HTTP.stallForTests = 0
+        HTTP.offlineForTests = true
+        CloudHealth.markOK(first.service, use: "stt")
+        stt("cloud fails at once (offline)", wantLocal: true, within: 1500)
+        HTTP.offlineForTests = false
+        stt("cloud back while still marked slow", wantLocal: nil, within: 1700)
+        CloudHealth.markOK(first.service, use: "chat")
+        cleanup("cleanup once the cloud is back", within: 2400, wantPolished: nil)
+        print(ok ? "HEDGE TEST PASS" : "HEDGE TEST FAIL"); return ok ? 0 : 1
+    }
+
     /// `--watcher-test`: bundle id matching for the call detector.
     static func watcherTest() -> Int32 {
         let cases: [(String, String?)] = [("com.google.Chrome.helper", "Chrome"), ("com.google.Chrome", "Chrome"), ("com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan", "Google Meet"),
@@ -482,9 +544,13 @@ enum SelfTest {
             let mic = MicRecorder()
             do {
                 try mic.start(deviceUID: store.settings.microphoneUID, voiceIsolation: store.settings.voiceIsolation)
-                Thread.sleep(forTimeInterval: 1.0)
+                // The run loop has to turn while this waits: the recorder's own watchdog, which rebuilds a
+                // pipeline that delivers nothing in 1.5 s, is a timer on it. A plain sleep kept it from ever
+                // firing, so a cold start that needed the rebuild (seen with a call app open) failed here
+                // although the app itself recovers from it.
+                RunLoop.main.run(until: Date().addingTimeInterval(4))
                 let s = mic.stop()
-                s.count > 8000 ? line("PASS", "mic capture", "\(s.count) samples at 16 kHz in 1 s") : line("FAIL", "mic capture", "only \(s.count) samples")
+                s.count > 8000 ? line("PASS", "mic capture", "\(s.count) samples at 16 kHz in 4 s") : line("FAIL", "mic capture", "only \(s.count) samples")
             } catch { line("FAIL", "mic capture", error.localizedDescription) }
         } else { line("SKIP", "mic capture", "microphone permission not granted to this binary yet") }
 
@@ -524,15 +590,15 @@ enum SelfTest {
         }
         let llm = LLM(store: store)
         if llm.hasCloud {
+            // A dictation gives the AI pass 2 s and then goes out with the rules only. This check is
+            // about whether the pass works at all, so it waits longer than a dictation would.
+            for service in ["groq", "xai"] { CloudHealth.markOK(service, use: "chat") }
             let t0 = Date()
-            switch await_({ await eng.process("um so i think we should uh ship it on tuesday no wait friday", category: .work, appName: "Slack") }) {
-            case .success(let s):
-                // Must actually be cleaned: correction applied, capitalised, filler gone.
-                let ok = s.contains("Friday") && !s.lowercased().contains("tuesday") && !s.lowercased().contains(" uh ")
-                    && s.first?.isUppercase == true && s.last.map { ".!?".contains($0) } == true
-                line(ok ? "PASS" : "FAIL", "ai cleanup", String(format: "%.2fs \"%@\"%@", Date().timeIntervalSince(t0), s, ok ? "" : " (AI pass did not run, see pieflow.log)"))
-            case .failure(let e): line("FAIL", "ai cleanup", e.localizedDescription)
-            }
+            let out = (try? await_({ await eng.process("um so i think we should uh ship it on tuesday no wait friday", category: .work, appName: "Slack", cleanupDeadline: 20) }).get()) ?? ""
+            // Must actually be cleaned: correction applied, capitalised, filler gone.
+            let ok = out.contains("Friday") && !out.lowercased().contains("tuesday") && !out.lowercased().contains(" uh ")
+                && out.first?.isUppercase == true && out.last.map { ".!?".contains($0) } == true
+            line(ok ? "PASS" : "FAIL", "ai cleanup", String(format: "%.2fs \"%@\"%@", Date().timeIntervalSince(t0), out, ok ? "" : " (AI pass did not run, see pieflow.log)"))
         } else { line("SKIP", "ai cleanup", "no Groq or xAI key") }
         return finish()
     }

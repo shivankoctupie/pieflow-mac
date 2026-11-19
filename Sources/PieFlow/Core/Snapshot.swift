@@ -63,6 +63,24 @@ enum Snapshot {
         print("snapshot \(name)")
     }
 
+    /// Scrolls every scroll view in the window to its end. False when nothing had further to go.
+    static func scrollToEnd(_ window: NSWindow) -> Bool {
+        var moved = false
+        func visit(_ view: NSView) {
+            if let scroll = view as? NSScrollView, let doc = scroll.documentView {
+                let room = doc.frame.height - scroll.contentView.bounds.height
+                if room > 1 {
+                    scroll.contentView.scroll(to: NSPoint(x: 0, y: doc.isFlipped ? room : 0))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    moved = true
+                }
+            }
+            view.subviews.forEach(visit)
+        }
+        if let root = window.contentView { visit(root) }
+        return moved
+    }
+
     static func run(_ app: AppDelegate, dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var steps: [(String, () -> Void)] = []
@@ -88,8 +106,19 @@ enum Snapshot {
             let (name, action) = steps[i]
             action()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                if name.hasPrefix("settings"), let sheet = app.window?.attachedSheet { capture(sheet, name, to: dir) }
-                else if let w = app.window { capture(w, name, to: dir) }
+                if name.hasPrefix("settings"), let sheet = app.window?.attachedSheet {
+                    capture(sheet, name, to: dir)
+                    // A settings tab can be taller than the sheet: take its lower end too, or the rows
+                    // past the fold are never looked at.
+                    if scrollToEnd(sheet) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            capture(sheet, name + "-end", to: dir)
+                            i += 1
+                            next()
+                        }
+                        return
+                    }
+                } else if let w = app.window { capture(w, name, to: dir) }
                 i += 1
                 next()
             }
@@ -251,5 +280,124 @@ enum BarTest {
                 }
             }
         }
+    }
+}
+
+/// `PieFlow --bar-drag-test [dir]`: the Flow Bar can be dragged anywhere, stays put, and a plain click
+/// still works. Runs without the app itself (no hotkey, no microphone, no second instance), sends the
+/// panel its own mouse events and scripts the mouse position, so the real pointer never moves. Nothing
+/// is saved. With a directory, it also saves a picture of the pill at the dragged spot.
+enum BarDragTest {
+    static func run() -> Int32 {
+        Store.writesToDisk = false
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        Theme.registerFonts()
+        let store = Store.shared
+        var clean = store.settings
+        clean.flowBarX = nil; clean.flowBarY = nil; clean.showFlowBar = true
+        store.settings = clean
+        let llm = LLM(store: store)
+        let dictation = DictationController(store: store, transcriber: Transcriber(store: store), engine: TextEngine(store: store, llm: llm))
+        guard let screen = NSScreen.main else { print("bar-drag-test FAIL no screen"); return 1 }
+        let vf = screen.visibleFrame
+        var mouse = NSPoint(x: vf.midX, y: vf.minY + 20)
+        var taps = 0
+        let bar = FlowBarController(dictation: dictation, store: store)
+        bar.mouseLocation = { mouse }
+        bar.onTap = { taps += 1 }
+        var ok = true
+        func check(_ name: String, _ pass: Bool, _ detail: String = "") {
+            print("bar-drag-test \(pass ? "PASS" : "FAIL") \(name)\(detail.isEmpty ? "" : "  [\(detail)]")"); ok = ok && pass
+        }
+        func spin(_ seconds: Double) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+        func near(_ a: NSPoint, _ b: NSPoint, _ tolerance: CGFloat = 1.5) -> Bool { abs(a.x - b.x) <= tolerance && abs(a.y - b.y) <= tolerance }
+        func show(_ p: NSPoint) -> String { String(format: "%.0f, %.0f", p.x, p.y) }
+        func anchor(_ b: FlowBarController = bar) -> NSPoint { FlowBarLayout.anchor(of: b.frame ?? .zero) }
+        func window(_ b: FlowBarController = bar) -> NSWindow? {
+            NSApp.windows.first { $0.frame == b.frame && $0 is FlowBarPanel }
+        }
+        /// A mouse event at the scripted pointer position, delivered straight to the panel.
+        func send(_ type: NSEvent.EventType, clicks: Int = 1) {
+            guard let w = window(), let e = NSEvent.mouseEvent(with: type, location: NSPoint(x: mouse.x - w.frame.minX, y: mouse.y - w.frame.minY),
+                                                               modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                                               context: nil, eventNumber: 0, clickCount: clicks, pressure: type == .leftMouseUp ? 0 : 1) else { return }
+            w.sendEvent(e)
+            spin(0.03)
+        }
+        /// Press on the pill, travel to `target` in steps, let go.
+        func dragPill(to target: NSPoint, steps: Int = 12) {
+            let start = NSPoint(x: anchor().x, y: anchor().y + 14)
+            mouse = start
+            send(.leftMouseDown)
+            for i in 1...steps {
+                let t = CGFloat(i) / CGFloat(steps)
+                mouse = NSPoint(x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t)
+                send(.leftMouseDragged)
+            }
+            send(.leftMouseUp)
+            spin(0.3)
+        }
+
+        bar.show()
+        spin(0.8)
+        let home = FlowBarLayout.defaultAnchor(in: vf)
+        check("starts at the bottom centre", near(anchor(), home), show(anchor()))
+
+        // 1. A plain click still reaches the pill.
+        mouse = NSPoint(x: home.x, y: home.y + 14)
+        send(.leftMouseDown); send(.leftMouseUp); spin(0.4)
+        check("a click on the pill still counts as a click", taps == 1, "clicks \(taps)")
+        check("a click does not move it", near(anchor(), home), show(anchor()))
+
+        // 2. Drag it up and to the right.
+        let target = NSPoint(x: vf.minX + vf.width * 0.72, y: vf.minY + vf.height * 0.55)
+        dragPill(to: target)
+        let dropped = anchor()
+        check("the pill follows the drag", near(dropped, NSPoint(x: target.x, y: target.y - 14), 3), "at \(show(dropped)), pointer let go at \(show(target))")
+        check("a drag is not taken for a click", taps == 1, "clicks \(taps)")
+        check("the spot is remembered", store.settings.flowBarX != nil && store.settings.flowBarY != nil,
+              String(format: "%.3f, %.3f", store.settings.flowBarX ?? -1, store.settings.flowBarY ?? -1))
+        if let dir = CommandLine.arguments.firstIndex(of: "--bar-drag-test").flatMap({ $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }),
+           let frame = bar.frame, let full = CGDisplayCreateImage(CGMainDisplayID()) {
+            let scale = CGFloat(full.width) / screen.frame.width
+            let area = frame.insetBy(dx: -120, dy: -60)
+            let rect = CGRect(x: area.minX * scale, y: (screen.frame.height - area.maxY) * scale, width: area.width * scale, height: area.height * scale)
+            if let crop = full.cropping(to: rect) {
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                try? NSBitmapImageRep(cgImage: crop).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("pill-dragged.png"))
+            }
+        }
+
+        // 3. It stays there: when a dictation starts, and after a restart.
+        mouse = NSPoint(x: vf.midX, y: vf.midY)
+        bar.position()
+        check("stays put when a dictation starts", near(anchor(), dropped), show(anchor()))
+        let again = FlowBarController(dictation: dictation, store: store)
+        again.mouseLocation = { mouse }
+        again.show(); spin(0.3)
+        check("comes back to the same spot after a restart", near(anchor(again), dropped), show(anchor(again)))
+
+        // 4. It cannot be dragged off the screen.
+        dragPill(to: NSPoint(x: vf.maxX + 600, y: vf.maxY + 600))
+        let corner = anchor()
+        check("stops at the screen edge", near(corner, NSPoint(x: vf.maxX - FlowBarLayout.sideMargin, y: vf.maxY - FlowBarLayout.topMargin)), show(corner))
+        check("whole pill still on screen", vf.contains(NSRect(x: corner.x - 60, y: corner.y, width: 120, height: 48)))
+
+        // 5. Dropped next to the bottom centre, it goes home and the saved spot is cleared.
+        dragPill(to: NSPoint(x: home.x + 12, y: home.y + 14 + 10))
+        check("dropped near the bottom centre, it snaps back", near(anchor(), home) && store.settings.flowBarX == nil, show(anchor()))
+
+        // 6. Reset in Settings.
+        dragPill(to: target)
+        check("moved again", !near(anchor(), home, 50), show(anchor()))
+        var reset = store.settings
+        reset.flowBarX = nil; reset.flowBarY = nil
+        store.settings = reset
+        spin(0.4)
+        check("Reset in Settings puts it back", near(anchor(), home), show(anchor()))
+
+        print(ok ? "BAR DRAG TEST PASS" : "BAR DRAG TEST FAIL")
+        return ok ? 0 : 1
     }
 }

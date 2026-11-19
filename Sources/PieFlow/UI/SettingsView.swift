@@ -251,6 +251,17 @@ struct SystemSettings: View {
                 PillToggle(isOn: Binding(get: { store.settings.launchAtLogin }, set: { store.settings.launchAtLogin = $0; LoginItem.set($0) }))
             }
             SettingsRow(title: "Show Flow Bar at all times") { PillToggle(isOn: $store.settings.showFlowBar) }
+            SettingsRow(title: "Flow Bar position", subtitle: "Drag the Flow Bar to any spot on screen and it stays there. Drop it at the bottom centre, or press Reset, to put it back.") {
+                Button("Reset") {
+                    var settings = store.settings
+                    settings.flowBarX = nil
+                    settings.flowBarY = nil
+                    store.settings = settings
+                }
+                .buttonStyle(GhostButton()).fixedSize()
+                .disabled(store.settings.flowBarX == nil)
+                .opacity(store.settings.flowBarX == nil ? 0.45 : 1)
+            }
             SettingsRow(title: "Keep in Dock", subtitle: "PieFlow runs from the menu bar. Its Dock icon shows only while this window is open, unless you turn this on.", divider: false) {
                 PillToggle(isOn: Binding(get: { store.settings.keepInDock }, set: {
                     store.settings.keepInDock = $0

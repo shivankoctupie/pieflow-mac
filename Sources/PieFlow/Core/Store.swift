@@ -92,7 +92,11 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Tests that change settings turn this off, so they never write over the files of the running app.
+    static var writesToDisk = true
+
     private func save<T: Encodable>(_ name: String, _ value: T, secret: Bool = false) {
+        guard Self.writesToDisk else { return }
         pending[name]?.cancel()
         // Encoding happens on the I/O queue too: meetings.json alone is several megabytes, and encoding
         // it on the main thread froze the interface for a moment after every change.
