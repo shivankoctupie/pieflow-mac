@@ -1,33 +1,54 @@
 # PieFlow for Mac
 
-Personal voice dictation and meeting notes for macOS, modelled on Wispr Flow. Hold `fn`, speak, let go, and clean text lands wherever your cursor is.
+Free, open source voice dictation for macOS. Hold `fn`, speak, let go, and clean text lands wherever your cursor is. It also records meetings and writes the notes.
+
+**[Download the latest version](https://github.com/shivankoctupie/pieflow-mac/releases/latest)** (macOS 14 or later, Apple silicon and Intel) · [Website](https://shivankoctupie.github.io/pieflow-mac/)
+
+![PieFlow dictation history on a Mac](docs/img/dictation.png)
 
 ## What it does
 
-- **Dictation anywhere.** Hold `fn` (or Right Option, Right Command, Right Control) to talk. Double tap, or `fn` + space, for hands-free. Esc cancels.
-- **Engines with fallback.** Grok speech to text (xAI), Groq Whisper Large v3 Turbo, and local whisper.cpp (offline, Metal accelerated). Order is configurable; a failed request falls through to the next engine.
-- **AI cleanup.** Removes filler, applies self corrections ("Tuesday, no wait, Friday"), and follows a per app Style (formal, casual, very casual). Without a key, a rules engine does the basics.
-- **Dictionary** biases transcription toward your names and jargon, and learns from edits you make in history.
-- **Snippets** expand spoken triggers ("my email address") into saved text.
-- **Transforms.** Select text in any app, press `⌥1` (Polish) or `⌥2` (Prompt Engineer), or add your own.
-- **Notetaker.** Records your mic and the call's system audio (ScreenCaptureKit), transcribes live with You / Others labels, then writes a summary and action items.
-- **Insights, Scratchpad, Flow Bar, menu bar item**, history with playback, retry and copy.
-
-Everything is stored in `~/Library/Application Support/PieFlow`. Audio leaves the Mac only for the cloud engines you configure.
+- **Dictation in any app.** Hold `fn` (or Right Option, Right Command, Right Control) to talk. Double tap, or `fn` + space, for hands-free. Esc cancels.
+- **Your choice of engine.** Groq Whisper Large v3 Turbo, Grok speech to text (xAI), or local whisper.cpp running fully offline on your Mac. If the cloud is slow or down, the local model takes over after about two seconds.
+- **AI cleanup.** Removes filler words, applies self corrections ("Tuesday, no wait, Friday"), and follows a style you set per app (formal, casual, very casual). Without an API key, built in rules do the basics.
+- **Dictionary.** Teaches it your names and jargon, and it learns from the edits you make.
+- **Snippets.** Say "my email address" and it types the saved text.
+- **Transforms.** Select text in any app and press `⌥1` to polish it, or add your own prompts.
+- **Notetaker.** Records your mic and the other side of a call, transcribes it live, then writes a summary with action items.
+- **Flow Bar.** A small pill that shows when PieFlow is listening. Drag it anywhere on screen.
 
 ## Install
 
-Open `dist/PieFlow-1.0.0.dmg`, drag PieFlow to Applications, and follow `docs/INSTALL.txt` for the one time Gatekeeper step (the app is ad hoc signed, not notarized).
+1. Download `PieFlow-x.y.z.dmg` from the [latest release](https://github.com/shivankoctupie/pieflow-mac/releases/latest) and drag PieFlow into Applications.
+2. Open it. PieFlow is not notarized by Apple, so macOS blocks the first launch. Click Done, then go to System Settings > Privacy & Security, scroll down and click **Open Anyway**. Or run this once in Terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/PieFlow.app
+   ```
+
+3. Allow Microphone and Accessibility when asked. Accessibility is what lets PieFlow see the `fn` key and paste text.
+4. Pick an engine: paste a [Groq](https://console.groq.com) or [xAI](https://console.x.ai) API key, or download a local Whisper model to work offline with no key at all.
+
+If your Mac opens the emoji picker when you press `fn`, set System Settings > Keyboard > "Press fn key to" to "Do Nothing".
+
+PieFlow updates itself: it checks this repository for a new release and installs it when you say so.
+
+## Privacy
+
+- No account, no analytics, no tracking.
+- Everything is stored on your Mac in `~/Library/Application Support/PieFlow`, including your API keys.
+- Audio and text leave your Mac only for the cloud engines you set up yourself. With a local model and no keys, nothing leaves at all.
+- The only other network call is the update check against GitHub.
 
 ## Build from source
 
-Needs Command Line Tools (no full Xcode) and `brew install cmake`.
+Needs the Xcode Command Line Tools (full Xcode is not required) and `brew install cmake`.
 
 ```bash
 scripts/build.sh
 ```
 
-That builds a universal (Apple silicon and Intel) app at `build/PieFlow.app` and the DMG in `dist/`. `scripts/build-whisper.sh` rebuilds the bundled `whisper-cli`.
+That builds a universal app at `build/PieFlow.app` and a DMG in `dist/`. `scripts/build-whisper.sh` rebuilds the bundled `whisper-cli`.
 
 ## Check a build
 
@@ -35,10 +56,16 @@ That builds a universal (Apple silicon and Intel) app at `build/PieFlow.app` and
 build/PieFlow.app/Contents/MacOS/PieFlow --selftest
 ```
 
-Prints PASS / SKIP / FAIL for fonts, data dir, whisper-cli, audio devices, mic capture, the event tap, every configured engine (using a synthesized speech clip) and AI cleanup.
+Prints PASS, SKIP or FAIL for fonts, the data folder, whisper-cli, audio devices, mic capture, the hotkey listener, every engine you configured and AI cleanup.
 
 ```bash
 PIEFLOW_HOME=/tmp/pf-demo build/PieFlow.app/Contents/MacOS/PieFlow --snapshot /tmp/pf-shots
 ```
 
-Renders every screen to PNG with demo data in a throwaway data folder.
+Renders every screen to PNG with demo data in a throwaway data folder. That is how the screenshots in this repository are made.
+
+## License
+
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
+
+PieFlow is an independent project. It started as a free alternative to Wispr Flow and is not affiliated with Wispr Flow, xAI, Groq or OpenAI.

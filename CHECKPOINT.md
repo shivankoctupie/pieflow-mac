@@ -1,6 +1,6 @@
 # Checkpoint
 
-Phase: 1.0.11 released (2026-11-19). main and tag v1.0.11 are at dbe617f; the GitHub release carries PieFlow-1.0.11.dmg and its .sha256, releases/latest returns v1.0.11, and the public download matches the checksum. The dev Mac runs this exact build.
+Phase: 1.0.12 built, tested and installed on the dev Mac (2026-11-21); README, docs/ website and the clean whisper-cli are written but not committed. Exact next step: commit, push, release v1.0.12 draft first (see Open), turn on GitHub Pages for main /docs, set the repository homepage to https://shivankoctupie.github.io/pieflow-mac/, then check the page and the download as a logged out visitor.
 
 Tests: --selftest, --hedge-test, --bar-drag-test, --bar-test, --duck-test, --sys-meter with --duck-live or --vp-probe, --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test, --snapshot.
 

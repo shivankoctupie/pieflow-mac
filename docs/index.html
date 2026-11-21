@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PieFlow: free, open source voice dictation for Mac</title>
+<meta name="description" content="PieFlow is a free, open source voice dictation app for Mac. Hold fn, speak, and clean text appears in any app. Works offline with local Whisper.">
+<link rel="canonical" href="https://shivankoctupie.github.io/pieflow-mac/">
+<meta name="theme-color" content="#F4F2EE">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PieFlow">
+<meta property="og:title" content="PieFlow: free, open source voice dictation for Mac">
+<meta property="og:description" content="Hold fn, speak, let go. Clean text lands wherever your cursor is. Works offline with local Whisper, or with your own Groq or xAI key.">
+<meta property="og:url" content="https://shivankoctupie.github.io/pieflow-mac/">
+<meta property="og:image" content="https://shivankoctupie.github.io/pieflow-mac/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" sizes="64x64" href="img/icon-64.png">
+<link rel="apple-touch-icon" href="img/icon-180.png">
+<link rel="preload" href="fonts/EBGaramond-400.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/Figtree-400.ttf" as="font" type="font/ttf" crossorigin>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "PieFlow",
+  "description": "Free, open source voice dictation and meeting notes for Mac. Hold fn, speak, and clean text appears in any app. Works offline with local Whisper.",
+  "applicationCategory": "ProductivityApplication",
+  "operatingSystem": "macOS 14 or later",
+  "url": "https://shivankoctupie.github.io/pieflow-mac/",
+  "downloadUrl": "https://github.com/shivankoctupie/pieflow-mac/releases/latest",
+  "codeRepository": "https://github.com/shivankoctupie/pieflow-mac",
+  "license": "https://github.com/shivankoctupie/pieflow-mac/blob/main/LICENSE",
+  "image": "https://shivankoctupie.github.io/pieflow-mac/img/og.png",
+  "screenshot": "https://shivankoctupie.github.io/pieflow-mac/img/dictation.png",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+@font-face { font-family: "EB Garamond"; src: url("fonts/EBGaramond-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Figtree"; src: url("fonts/Figtree-400.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Figtree"; src: url("fonts/Figtree-500.ttf") format("truetype"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Figtree"; src: url("fonts/Figtree-600.ttf") format("truetype"); font-weight: 600; font-display: swap; }
+
+:root {
+  --window: #F4F2EE;
+  --page: #FAF9F7;
+  --card: #F1EFEA;
+  --line: #E4E1DA;
+  --ink: #1A1A1A;
+  --ink2: #55524C;
+  --ink3: #8C8880;
+  --accent: #F5A54A;
+  --teal: #1F5F5B;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--window);
+  color: var(--ink);
+  font-family: "Figtree", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+img { display: block; max-width: 100%; height: auto; }
+a { color: inherit; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+header.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 21px; text-decoration: none; letter-spacing: -0.01em; }
+.brand svg { width: 24px; height: 22px; }
+nav.links { display: flex; align-items: center; gap: 26px; font-size: 15.5px; font-weight: 500; }
+nav.links a { text-decoration: none; color: var(--ink2); }
+nav.links a:hover { color: var(--ink); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 13px 22px; border-radius: 10px; font-weight: 600; font-size: 16.5px; text-decoration: none; border: 1px solid var(--ink); white-space: nowrap; }
+.btn.dark { background: var(--ink); color: #fff; }
+.btn.dark:hover { background: #000; }
+.btn.light { background: #fff; border-color: var(--line); color: var(--ink); }
+.btn.light:hover { border-color: var(--ink3); }
+.btn.small { padding: 9px 16px; font-size: 15px; }
+.btn:focus-visible, a:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+
+.hero { padding: 64px 0 40px; }
+h1, h2 { font-family: "EB Garamond", Georgia, "Times New Roman", serif; font-weight: 400; letter-spacing: -0.012em; margin: 0; }
+h1 { font-size: clamp(42px, 6.4vw, 80px); line-height: 1.03; max-width: 19ch; text-wrap: balance; }
+.lede { font-size: clamp(18px, 1.7vw, 21px); color: var(--ink2); max-width: 54ch; margin: 24px 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+.fine { margin: 16px 0 0; font-size: 14.5px; color: var(--ink3); }
+
+.shot { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--page); box-shadow: 0 1px 2px rgba(26, 26, 26, 0.04), 0 14px 34px rgba(26, 26, 26, 0.07); }
+.hero .shot { margin-top: 52px; }
+
+section { padding: 84px 0; border-top: 1px solid var(--line); }
+.hero + section { border-top: 0; }
+.split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: center; }
+.split.flip { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+.split.flip > .text { order: 2; }
+h2 { font-size: clamp(31px, 3.5vw, 44px); line-height: 1.1; max-width: 18ch; }
+.text p { color: var(--ink2); margin: 18px 0 0; max-width: 46ch; }
+
+.keys { margin: 26px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.keys li { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15.5px; }
+.keys span { color: var(--ink2); text-align: right; }
+kbd { font-family: inherit; font-size: 13.5px; font-weight: 500; background: #fff; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+
+.narrow { max-width: 760px; }
+.steps { margin: 30px 0 0; padding: 0; list-style: none; counter-reset: step; }
+.steps li { counter-increment: step; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px; padding: 18px 0; border-top: 1px solid var(--line); }
+.steps li::before { content: counter(step); font-family: "EB Garamond", Georgia, serif; font-size: 30px; line-height: 1; color: var(--ink3); }
+.steps strong { font-weight: 600; }
+.steps p { margin: 4px 0 0; color: var(--ink2); }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; }
+pre { margin: 12px 0 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
+pre code { background: none; border: 0; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.plain { margin: 26px 0 0; padding: 0; list-style: none; }
+.plain li { padding: 13px 0 13px 26px; border-top: 1px solid var(--line); color: var(--ink2); position: relative; }
+.plain li::before { content: ""; position: absolute; left: 2px; top: 23px; width: 9px; height: 9px; border-radius: 50%; background: var(--teal); }
+
+.faq { margin: 30px 0 0; }
+.faq h3 { font-size: 18px; font-weight: 600; margin: 0; }
+.faq div { padding: 20px 0; border-top: 1px solid var(--line); }
+.faq p { margin: 7px 0 0; color: var(--ink2); max-width: 66ch; }
+
+footer { border-top: 1px solid var(--line); padding: 34px 0 54px; font-size: 14.5px; color: var(--ink3); }
+footer .row { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; }
+footer a { color: var(--ink2); }
+
+@media (max-width: 860px) {
+  body { font-size: 16.5px; }
+  .wrap { padding: 0 18px; }
+  .hero { padding: 36px 0 28px; }
+  .hero .shot { margin-top: 36px; }
+  section { padding: 56px 0; }
+  .split { grid-template-columns: minmax(0, 1fr); gap: 30px; }
+  .split.flip > .text { order: 0; }
+  nav.links .hide-small { display: none; }
+  .shot { border-radius: 10px; }
+}
+@media (max-width: 420px) {
+  .actions .btn { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <a class="brand" href="./" aria-label="PieFlow home">
+      <svg viewBox="0 0 24 22" aria-hidden="true">
+        <rect x="0" y="6.4" width="3" height="9.2" rx="1.5" fill="#1A1A1A"/>
+        <rect x="5.25" y="2.9" width="3" height="16.2" rx="1.5" fill="#1A1A1A"/>
+        <rect x="10.5" y="5.3" width="3" height="11.4" rx="1.5" fill="#1A1A1A"/>
+        <rect x="15.75" y="0" width="3" height="22" rx="1.5" fill="#F5A54A"/>
+        <rect x="21" y="4.4" width="3" height="13.2" rx="1.5" fill="#1A1A1A"/>
+      </svg>
+      PieFlow
+    </a>
+    <nav class="links" aria-label="Main">
+      <a class="hide-small" href="#install">Install</a>
+      <a class="hide-small" href="#faq">Questions</a>
+      <a href="https://github.com/shivankoctupie/pieflow-mac">GitHub</a>
+      <a class="btn dark small" data-download href="https://github.com/shivankoctupie/pieflow-mac/releases/latest">Download</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h1>Talk instead of typing, in any Mac app.</h1>
+      <p class="lede">Hold <kbd>fn</kbd>, speak, let go. PieFlow turns what you said into clean text right where your cursor is. It is free, open source, and can run fully offline.</p>
+      <div class="actions">
+        <a class="btn dark" data-download href="https://github.com/shivankoctupie/pieflow-mac/releases/latest">Download for Mac</a>
+        <a class="btn light" href="https://github.com/shivankoctupie/pieflow-mac">Source on GitHub</a>
+      </div>
+      <p class="fine"><span id="version">Free.</span> macOS 14 or later, Apple silicon and Intel.</p>
+      <div class="shot">
+        <img src="img/dictation.png" width="1600" height="1058" alt="The PieFlow window on a Mac, showing a history of dictated messages with word count and speaking speed" fetchpriority="high">
+      </div>
+    </div>
+
+    <section>
+      <div class="split">
+        <div class="text">
+          <h2>Voice typing that works where you already write</h2>
+          <p>Mail, Slack, WhatsApp, your code editor, a search box. PieFlow pastes at the cursor, so there is nothing to copy across.</p>
+          <p>It removes the ums, fixes punctuation, and handles "Tuesday, no wait, Friday" the way you meant it.</p>
+          <ul class="keys">
+            <li><kbd>Hold fn</kbd><span>Dictate, release to finish</span></li>
+            <li><kbd>Double tap fn</kbd><span>Hands-free, press again to stop</span></li>
+            <li><kbd>Esc</kbd><span>Cancel</span></li>
+            <li><kbd>Select text, then ⌥ 1</kbd><span>Polish what you wrote</span></li>
+          </ul>
+        </div>
+        <div class="shot">
+          <img src="img/style.png" width="1600" height="1058" loading="lazy" alt="PieFlow style settings: formal, casual and very casual writing styles for personal messages, work messages and email">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="split flip">
+        <div class="text">
+          <h2>Fast in the cloud, private on your Mac</h2>
+          <p>Use Groq or xAI with your own API key for the quickest, most accurate results. Or download a Whisper model and dictate with no internet and no key.</p>
+          <p>Have both, and PieFlow uses the cloud first. If it has not answered in about two seconds, the local model steps in, so a bad connection never leaves you waiting.</p>
+        </div>
+        <div class="shot">
+          <img src="img/engines.png" width="1600" height="1157" loading="lazy" alt="PieFlow transcription settings with Groq and xAI key fields and three local Whisper models to download">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="split">
+        <div class="text">
+          <h2>Meeting notes without a bot in the call</h2>
+          <p>Notetaker records your microphone and the other side of the call straight from your Mac. Nobody else sees a recorder join.</p>
+          <p>You get a live transcript, then a summary with action items and key points. It can start by itself when a call begins.</p>
+        </div>
+        <div class="shot">
+          <img src="img/meeting-notes.png" width="1600" height="1058" loading="lazy" alt="A meeting note in PieFlow with a summary, action items and key points">
+        </div>
+      </div>
+    </section>
+
+    <section id="install">
+      <div class="narrow">
+        <h2>Install in two minutes</h2>
+        <ol class="steps">
+          <li><div><strong>Download the DMG and drag PieFlow into Applications.</strong>
+            <p><a data-download href="https://github.com/shivankoctupie/pieflow-mac/releases/latest">Get the latest release from GitHub.</a></p></div></li>
+          <li><div><strong>Open it, then allow it once.</strong>
+            <p>PieFlow is not notarized by Apple, so macOS blocks the first launch. Click Done, open System Settings, go to Privacy &amp; Security, scroll down and click Open Anyway. Or run this in Terminal:</p>
+            <pre><code>xattr -dr com.apple.quarantine /Applications/PieFlow.app</code></pre></div></li>
+          <li><div><strong>Allow Microphone and Accessibility.</strong>
+            <p>Accessibility is what lets PieFlow see the fn key and paste text for you.</p></div></li>
+          <li><div><strong>Pick an engine.</strong>
+            <p>Paste a key from <a href="https://console.groq.com">Groq</a> or <a href="https://console.x.ai">xAI</a>, or download a local Whisper model to work offline.</p></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="privacy">
+      <div class="narrow">
+        <h2>Your words stay yours</h2>
+        <ul class="plain">
+          <li>No account, no analytics, no tracking.</li>
+          <li>History, notes and API keys are stored only on your Mac.</li>
+          <li>Audio leaves your Mac only for the cloud engine you chose. With a local model and no keys, nothing leaves at all.</li>
+          <li>The code is open, so you can read exactly what it does or build it yourself.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="faq">
+      <div class="narrow">
+        <h2>Questions</h2>
+        <div class="faq">
+          <div>
+            <h3>Is PieFlow really free?</h3>
+            <p>Yes. The app is free and MIT licensed. Local Whisper costs nothing. If you use a cloud engine, you bring your own key and pay that provider directly; Groq has a free tier.</p>
+          </div>
+          <div>
+            <h3>Does it work offline?</h3>
+            <p>Yes. Download one of the local Whisper models in Settings (142 MB to 547 MB) and dictation runs entirely on your Mac.</p>
+          </div>
+          <div>
+            <h3>Which Macs does it run on?</h3>
+            <p>Any Mac on macOS 14 Sonoma or later, Apple silicon or Intel.</p>
+          </div>
+          <div>
+            <h3>Which languages can I dictate in?</h3>
+            <p>Pick a language in Settings or let it detect one. Groq Whisper and the Large v3 Turbo local model handle many languages, including Hindi, Spanish, French, German, Japanese and Chinese. The two smaller local models are English only.</p>
+          </div>
+          <div>
+            <h3>Why does macOS say it cannot verify the app?</h3>
+            <p>Apple shows that for any app that has not been through its paid notarization programme. PieFlow has not, yet. The install steps above get you past it once, and the source is public if you would rather build it yourself.</p>
+          </div>
+          <div>
+            <h3>Is this Wispr Flow?</h3>
+            <p>No. PieFlow is an independent open source project that started as a free alternative to Wispr Flow. It is not affiliated with Wispr Flow, Groq, xAI or OpenAI.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="row">
+      <span>PieFlow for Mac. MIT licensed.</span>
+      <span><a href="https://github.com/shivankoctupie/pieflow-mac">Source</a> · <a href="https://github.com/shivankoctupie/pieflow-mac/releases">All releases</a> · <a href="https://github.com/shivankoctupie/pieflow-mac/issues">Report a problem</a></span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// Points the download buttons straight at the newest DMG. Without JavaScript, or if GitHub does not
+// answer, they keep pointing at the releases page.
+fetch("https://api.github.com/repos/shivankoctupie/pieflow-mac/releases/latest")
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (release) {
+    if (!release) return;
+    var dmg = (release.assets || []).filter(function (a) { return /\.dmg$/.test(a.name); })[0];
+    if (!dmg) return;
+    document.querySelectorAll("[data-download]").forEach(function (a) { a.href = dmg.browser_download_url; });
+    var size = Math.round(dmg.size / 1048576);
+    document.getElementById("version").textContent = "Free. Version " + release.tag_name.replace(/^v/, "") + ", " + size + " MB.";
+  })
+  .catch(function () {});
+</script>
+</body>
+</html>
