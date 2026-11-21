@@ -1,6 +1,6 @@
 # Checkpoint
 
-Phase: 1.0.12 built, tested and installed on the dev Mac (2026-11-21); README, docs/ website and the clean whisper-cli are written but not committed. Exact next step: commit, push, release v1.0.12 draft first (see Open), turn on GitHub Pages for main /docs, set the repository homepage to https://shivankoctupie.github.io/pieflow-mac/, then check the page and the download as a logged out visitor.
+Phase: 1.0.12 released (2026-11-21). main and tag v1.0.12 are at 15fc399; releases/latest returns v1.0.12 and the public download matches its checksum. The website is live at https://shivankoctupie.github.io/pieflow-mac/ (GitHub Pages, main branch, docs/ folder; every push to main redeploys it). The repository is public with its description, homepage and topics set.
 
 Tests: --selftest, --hedge-test, --bar-drag-test, --bar-test, --duck-test, --sys-meter with --duck-live or --vp-probe, --pipeline-test, --watcher-test, --edit-test, --summarize-test, --drop-test, --mic-test, --aec-test, --update-test, --snapshot.
 
@@ -26,6 +26,11 @@ Open
 - Not confirmed by ear yet: music staying untouched around a dictation on the released build.
 - Machines on 1.0.10 or older take 1.0.11 through the in app updater; that path was not exercised for this release either.
 - Uploading the DMG can fail on a bad connection ("HTTP 408: Upload body timed out"). Release as a draft first (`gh release create --draft`, then `gh release upload`, then `gh release edit --draft=false --latest`), so a release never goes public without its DMG.
+- Search engines have not indexed the website yet; that takes days. Google Search Console (add the site, submit sitemap.xml) needs the owner's Google login. The page was sent to IndexNow (Bing and others) once; the key file is the 32 character .txt in docs/.
+- The repository's social preview image can only be set in the GitHub web settings; docs/img/og.png is made for it.
+- The app is not notarized, so every new user meets the "cannot verify" block on first launch. This is the biggest thing in the way of new users.
+- Releases 1.0.0 to 1.0.11 and the git history still contain a whisper-cli with the build machine's home folder path in it. Left alone on purpose: removing it means rewriting history and deleting those releases.
+- After a release, bump lastmod in docs/sitemap.xml only if the page itself changed. The page reads the version from the GitHub API, so it needs no edit per release.
 - 1.0.11: the drag was proven with events sent to the panel, not with a real pointer on the installed app; that is a by-hand check.
 - 1.0.11: on a bad connection more text comes from the local Base model, which is less accurate than Groq. A larger local model would help; nobody has measured how fast Small or Large v3 Turbo answer on this Mac.
 - The network at the dev Mac lost 10 to 25% of packets to api.groq.com on 2026-11-19. A selftest that fails only on "stt groq" is that: run `ping -c 10 api.groq.com` before blaming the build.
